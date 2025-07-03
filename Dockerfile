@@ -1,9 +1,5 @@
 FROM ubuntu:24.04
 
-WORKDIR /app
-
-RUN mkdir -p /app && chown -R ubuntu:ubuntu /app
-
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y \
@@ -19,35 +15,44 @@ RUN apt-get update && apt-get upgrade -y && \
     lsb-release \
     && rm -rf /var/lib/apt/lists/*
 
+# Create app directory and set permissions
+RUN mkdir -p /app && \
+    chown -R ubuntu:ubuntu /app && \
+    chmod -R 755 /app
+
 USER ubuntu
 
-RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+ENV PATH="/home/ubuntu/.local/bin:$PATH"
 
+# https://github.com/nvm-sh/nvm/releases
+ARG NVM_VERSION=0.40.3
+# https://nodejs.org/en/about/previous-releases
+ARG NVM_NODE_VERSION=22
 
-# Add nvm to PATH for future shell sessions
+# Install nvm and Node.js with proper environment
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v${NVM_VERSION}/install.sh | bash
+
 ENV NVM_DIR="/home/ubuntu/.nvm"
-ENV PATH="$NVM_DIR/versions/node/v22.16.0/bin:/home/ubuntu/.nvm/:/home/ubuntu/.local/bin:$PATH"
-RUN mkdir -p /home/ubuntu/.local/bin && \
-    echo '#!/bin/bash\nsource ~/.nvm/nvm.sh\nnvm "$@"' > /home/ubuntu/.local/bin/nvm && \
-    chmod +x /home/ubuntu/.local/bin/nvm
-
-RUN nvm install 22
-
-# Install the Anthropic Claude Code CLI globally
-RUN npm install -g @anthropic-ai/claude-code
+RUN . $NVM_DIR/nvm.sh && \
+    nvm install ${NVM_NODE_VERSION} && \
+    nvm use ${NVM_NODE_VERSION} && \
+    npm install -g @anthropic-ai/claude-code && \
+    echo "Let's symlink the nvm directory to the local bin directory" && \
+    NODE_VERSION=$(nvm current) && \
+    mkdir -p /home/ubuntu/.local/bin && \
+    echo "Symlinking Node.js and npm binaries to /home/ubuntu/.local/bin" && \
+    ln -sf /home/ubuntu/.nvm/versions/node/$NODE_VERSION/bin/* /home/ubuntu/.local/bin/
 
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Add uv to PATH
-ENV PATH="/home/ubuntu/.local/bin:$PATH"
-
 # Verify installations
 RUN node -v && \
-    nvm current && \
     npm -v && \
     python3 --version && \
     uv --version && \
     claude --version
+
+WORKDIR /app
 
 CMD ["bash"]

@@ -1,0 +1,18 @@
+[project]
+name = "ccd"
+version = "0.1.0"
+description = "Claude Code Docker - A Docker image for running Claude Code with Node.js and uv"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+ccd = "ccd.ccd:main"
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length=160
