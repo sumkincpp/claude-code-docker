@@ -21,7 +21,7 @@ Docker Container is based on Ubuntu 24.04 with Node.js, python and uv installed.
 Use the `uv` tool to install the `ccd` package from GitHub:
 
 ```bash
-uv tool install git@github.com:sumkincpp/ccd.git@latest
+uv tool install git@github.com:sumkincpp/claude-code-docker.git@latest
 ```
 
 You can use it as follows:
@@ -53,7 +53,7 @@ At first run you should call `claude login` inside the container to authenticate
 Use the `uv`, e.g.
 
 ```bash
-git clone git@github.com:sumkincpp/ccd.git
+git clone git@github.com:sumkincpp/claude-code-docker.git
 cd ccd
 uv run ccd --help
 ```
