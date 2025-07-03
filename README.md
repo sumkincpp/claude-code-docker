@@ -6,9 +6,9 @@ Docker Container is based on Ubuntu 24.04 with Node.js, python and uv installed.
 
 **Why?**
 
-- It doesn't mess with your local environment
-- It allows you to run Claude Code in a consistent environment
-- You can run it for different apps with different dependencies
+- It doesn't mess with your local environment (Node.js, Python)
+- It allows you to run Claude Code in a isolated and consistent environment
+- You can run it for different apps(each app in its own folder) without conflicts
 
 ## Requirements
 
@@ -27,16 +27,14 @@ uv tool install git@github.com:sumkincpp/ccd.git@latest
 You can use it as follows:
 
 ```bash
-# Build image
+# Build claude-code docker image
 ccd build
 
-# Run claude code for and app in app_folder
-ccd run [app_folder] [--home home_folder]
-
-# With verbosity
-ccd -v build              # Info level
-ccd -vv run ./app         # Debug level  
+# Run claude-code docker container with app in app_folder
+ccd run ./app
 ```
+
+At first run you should call `claude login` inside the container to authenticate with your Claude account.
 
 ### Arguments
 
@@ -56,6 +54,7 @@ Use the `uv`, e.g.
 
 ```bash
 git clone git@github.com:sumkincpp/ccd.git
+cd ccd
 uv run ccd --help
 ```
 
