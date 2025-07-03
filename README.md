@@ -22,9 +22,10 @@ You can use it as follows:
 
 ```bash
 # Build claude-code docker image
-git clone git@github.com:sumkincpp/claude-code-docker.git@latest
+git clone git@github.com:sumkincpp/claude-code-docker.git
 cd claude-code-docker
-uv tool install .
+# Install tool globally as editable package pointing to current folder
+uv tool install . -e
 ccd build
 
 # Run claude-code docker container within current folder
@@ -33,6 +34,19 @@ ccd run .
 ```
 
 At first run you should call `claude login` inside the container to authenticate with your Claude account.
+
+Normally you would run `ccd` from the root of your app folder, which will be mounted to `/app` inside the container:
+
+```bash
+vagrant@vagrant:~/Code/glances$ ccd -v run .
+INFO: Preparing to run container: claude-code
+INFO: Starting container with:
+INFO:   App folder: /home/vagrant/Code/glances
+INFO:   Home folder: /home/vagrant/.claude-code-docker
+INFO:   Full command: docker run -it --rm -v /home/vagrant/Code/glances:/app -v /home/vagrant/.claude-code-docker/.claude:/home/ubuntu/.claude -v /home/vagrant/.claude-code-docker/.claude.json:/home/ubuntu/.claude.json claude-code
+
+ubuntu@4287aebeaada:/app$ ...continue with claude commands...
+```
 
 ### Arguments
 
