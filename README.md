@@ -18,20 +18,18 @@ Docker Container is based on Ubuntu 24.04 with Node.js, python and uv installed.
 
 ## Usage
 
-Use the `uv` tool to install the `ccd` package from GitHub:
-
-```bash
-uv tool install git@github.com:sumkincpp/claude-code-docker.git@latest
-```
-
 You can use it as follows:
 
 ```bash
 # Build claude-code docker image
+git clone git@github.com:sumkincpp/claude-code-docker.git@latest
+cd claude-code-docker
+uv tool install .
 ccd build
 
-# Run claude-code docker container with app in app_folder
-ccd run ./app
+# Run claude-code docker container within current folder
+cd /home/user/my-code/my-app
+ccd run .
 ```
 
 At first run you should call `claude login` inside the container to authenticate with your Claude account.
@@ -39,7 +37,7 @@ At first run you should call `claude login` inside the container to authenticate
 ### Arguments
 
 - `app_folder`: Local directory mounted to `/app` (default: `./app`)
-- `--home`: Local directory for Claude config (default: `./home`), only `.claude` and `.claude.json` files are used
+- `--home`: Local directory for Claude config (default: `$HOME/.claude-code-docker`), only `.claude` and `.claude.json` files are used
 - `-v/-vv/-vvv`: Verbosity levels (warning/info/debug/verbose-debug)
 
 ### Volume Mounts

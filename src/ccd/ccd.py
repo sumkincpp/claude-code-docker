@@ -141,7 +141,9 @@ def main():
     run_parser = command_parser.add_parser("run", help="Run the Docker container")
 
     run_parser.add_argument("app_folder", nargs="?", default="./app", help="App folder path (default: ./app)")
-    run_parser.add_argument("--home", default="./home", help="Home folder path (default: ./home)")
+
+    home_folder = Path.home() / ".claude-code-docker"
+    run_parser.add_argument("--home", default=home_folder, help=f"Home folder path (default: ${home_folder})")
 
     args = parser.parse_args()
 
