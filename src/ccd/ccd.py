@@ -138,11 +138,14 @@ def main():
     command_parser.required = True
 
     command_parser.add_parser("build", help="Build the Docker image")
-    run_parser = command_parser.add_parser("run", help="Run the Docker container")
-
-    run_parser.add_argument("app_folder", nargs="?", default="./app", help="App folder path (default: ./app)")
 
     home_folder = Path.home() / ".claude-code-docker"
+
+    dot_parser = command_parser.add_parser(".", help="Run the Docker container")
+    dot_parser.add_argument("--home", default=home_folder, help=f"Home folder path (default: ${home_folder})")
+
+    run_parser = command_parser.add_parser("run", help="Run the Docker container")
+    run_parser.add_argument("app_folder", nargs="?", default="./app", help="App folder path (default: ./app)")
     run_parser.add_argument("--home", default=home_folder, help=f"Home folder path (default: ${home_folder})")
 
     args = parser.parse_args()
@@ -159,6 +162,9 @@ def main():
     elif args.command == "run":
         logger.debug("Executing run command")
         run_container(IMAGE_NAME, args.app_folder, args.home)
+    elif args.command == ".":
+        logger.debug("Executing run command with default . folder")
+        run_container(IMAGE_NAME, ".", args.home)
 
 
 if __name__ == "__main__":
