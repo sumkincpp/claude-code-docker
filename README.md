@@ -28,9 +28,12 @@ cd claude-code-docker
 uv tool install . -e
 ccd build
 
-# Run claude-code docker container within current folder
+# Run claude-code docker container with app folder mounted
+ccd run /home/user/my-code/my-app
+
+# Or run claude-code docker container within current folder
 cd /home/user/my-code/my-app
-ccd run .
+ccd .
 ```
 
 At first run you should call `claude login` inside the container to authenticate with your Claude account.
