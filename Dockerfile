@@ -13,6 +13,7 @@ RUN apt-get update && apt-get upgrade -y && \
     ca-certificates \
     gnupg \
     lsb-release \
+    ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app directory and set permissions
