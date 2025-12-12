@@ -10,7 +10,8 @@ from typing import List, Literal
 
 IMAGE_NAME = "claude-code"
 IMAGE_HOME_FOLDER = "/home/ubuntu"
-CONTAINER_NAME = "claude-code-container"
+# ccdXX
+CONTAINER_NAME_BASE = "ccd"
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -110,6 +111,79 @@ class VolumeManager:
         return volume_cmds
 
 
+def get_container_base_name():
+    """Get the base name for containers"""
+    # {base}-{folder}-{number}
+
+    return CONTAINER_NAME_BASE
+
+
+def get_running_containers():
+    """Get a list of currently running docker containers"""
+    cmd = ["docker", "ps", "--format", "{{.Names}}"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        running_containers = result.stdout.splitlines()
+        # filter ones matching our pattern
+        running_containers = [name for name in running_containers if name.startswith(CONTAINER_NAME_BASE + "-")]
+        logger.debug(f"Currently running containers: {running_containers}")
+
+        return list(sorted(running_containers))
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to get running containers with exit code {e.returncode}")
+        sys.exit(1)
+    except FileNotFoundError:
+        logger.error("Docker not found. Please ensure Docker is installed and in PATH")
+        sys.exit(1)
+
+
+def get_next_free_container_name(folder: str):
+    """Check current running docker containers and when starting a new one, avoid name conflict by appending a number suffix"""
+    running_containers = get_running_containers()
+
+    suffix = 1
+    while True:
+        candidate_name = f"{CONTAINER_NAME_BASE}-{folder}-{suffix:02d}"
+        if candidate_name not in running_containers:
+            logger.debug(f"Selected container name: {candidate_name}")
+            return candidate_name
+        suffix += 1
+
+
+def prompt_container_name():
+    """Prompt user for a container name"""
+
+    while True:
+        running = get_running_containers()
+
+        if not running:
+            raise ValueError("No running containers found!")
+
+        if len(running) == 1:
+            return running[0]
+
+        default_name = running[0]
+
+        print("Running containers:")
+        for index, name in enumerate(running):
+            print(f"  [{index}] {name}")
+
+        name = input(f"Enter container name, number or press Enter for default ({default_name}): ").strip()
+        if name == "":
+            return default_name
+        elif name in running:
+            return name
+        elif name.isdigit():
+            index = int(name)
+            if 0 <= index < len(running):
+                return running[index]
+            else:
+                print(f"Invalid number. Please enter a number between 0 and {len(running) - 1}.")
+        else:
+            print("Invalid input. Please enter a valid container name or number.")
+
+
 def run_container(image_name, app_folder, home_folder):
     """Run the Docker container with specified volumes"""
     logger.info(f"Preparing to run container: {image_name}")
@@ -140,14 +214,20 @@ def run_container(image_name, app_folder, home_folder):
     volume_manager.prepare_paths()
     volume_cmds = volume_manager.get_volume_commands()
 
+    container_name = get_next_free_container_name(app_path.name)
+
+    print(f"Starting container '{container_name}'...")
+
     # Build Docker run command
     cmd = [
         "docker",
         "run",
         "-it",
         "--rm",
+        "--hostname",
+        container_name,
         "--name",
-        CONTAINER_NAME,
+        container_name,
         *volume_cmds,
         image_name,
     ]
@@ -177,7 +257,11 @@ def attach_container():
     """Attach to a running Docker container"""
     logger.info("Attaching to running Docker container: claude-code-container")
 
-    cmd = ["docker", "exec", "-it", CONTAINER_NAME, "/bin/bash"]
+    container_name = prompt_container_name()
+
+    print(f"Attaching to container '{container_name}'...")
+
+    cmd = ["docker", "exec", "-it", container_name, "/bin/bash"]
 
     # ubuntu@7c3c7131cb15:/app$ exit
     # exit
@@ -222,19 +306,23 @@ def main():
     logger.debug(f"Arguments parsed: {args}")
     logger.debug(f"Image name: {IMAGE_NAME}")
 
-    if args.command == "build":
-        logger.debug("Executing build command")
-        docker_args = shlex.join(unknown) if unknown else ""
-        build_image(IMAGE_NAME, docker_args)
-    elif args.command == "run":
-        logger.debug("Executing run command")
-        run_container(IMAGE_NAME, args.app_folder, args.home)
-    elif args.command == ".":
-        logger.debug("Executing run command with default . folder")
-        run_container(IMAGE_NAME, ".", args.home)
-    elif args.command == "attach":
-        logger.debug("Executing attach command")
-        attach_container()
+    try:
+        if args.command == "build":
+            logger.debug("Executing build command")
+            docker_args = shlex.join(unknown) if unknown else ""
+            build_image(IMAGE_NAME, docker_args)
+        elif args.command == "run":
+            logger.debug("Executing run command")
+            run_container(IMAGE_NAME, args.app_folder, args.home)
+        elif args.command == ".":
+            logger.debug("Executing run command with default . folder")
+            run_container(IMAGE_NAME, ".", args.home)
+        elif args.command == "attach":
+            logger.debug("Executing attach command")
+            attach_container()
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
