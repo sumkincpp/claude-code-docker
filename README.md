@@ -1,93 +1,65 @@
 # Claude Code Docker
 
-**CCD** is python wrapper script to build and run Claude Code and other AI coding assistants inside Docker container.
+**CCD** is a Python wrapper to build and run AI coding assistants inside a Docker container.
 
-Docker Container is based on Ubuntu 24.04 with Node.js, python and uv installed.
+It builds a Docker image with one or more assistant CLIs and runs them against your local app folder.
+Toolchains stay isolated while your project files remain local and editable.
+
+Base image: Ubuntu 24.04 with Node.js, Python, and uv installed.
 
 **Why?**
 
-- It doesn't mess with your local environment (Node.js, Python)
-- It allows you to run Claude Code in a isolated and consistent environment
-- You can run it for different apps(each app in its own folder) without conflicts
+- Avoid installing assistant toolchains on your host.
+- Keep a consistent, reproducible runtime across projects.
+- Use separate app folders without cross-project conflicts.
 
-## Features
+## Quickstart
 
-By default all features are included, but you can customize the build to include or exclude specific features.
+```bash
+git clone git@github.com:sumkincpp/claude-code-docker.git
+cd claude-code-docker
+uv tool install . -e
+ccd build
+ccd run .
+```
 
-- Following CLI clients can be installed inside the container:
+## Features (Build-Time)
 
-  - `claude` - Anthropic Claude Code CLI
-  - `codex` - OpenAI Codex CLI
-  - `gemini` - Google Gemini CLI
-  - `opencode` - OpenCode CLI
-  - `copilot` - GitHub Copilot CLI
+Default build includes all clients and rust; you can include or exclude features.
+Exclude `rust` with `--without rust` to keep the image smaller.
 
-- Optionally following runtimes can be installed:
+### CLI Clients
 
-  - `rust` - Rust toolchain via rustup
+- `claude` - Anthropic Claude Code CLI
+- `codex` - OpenAI Codex CLI
+- `gemini` - Google Gemini CLI
+- `opencode` - OpenCode CLI
+- `copilot` - GitHub Copilot CLI
+
+### Runtimes
+
+- `rust` - Rust toolchain via rustup
 
 ## Requirements
 
 - Docker
 - Python 3.12+
-- uv - for development
+- uv (required for Quickstart and development)
+- Host OS: Linux or macOS (Windows via WSL2).
 
-## Usage
+## CLI Reference
 
-You can use it as follows:
-
-```bash
-# Build claude-code docker image
-$ git clone git@github.com:sumkincpp/claude-code-docker.git
-$ cd claude-code-docker
-# Install tool globally as editable package pointing to current folder
-$ uv tool install . -e
-$ ccd build
-
-# Build options
-$ ccd build --with rust,gemini
-$ ccd build --without opencode,copilot
-
-# Run claude-code docker container with app folder mounted
-$ ccd run /home/user/my-code/my-app
-
-# Or run claude-code docker container within current folder
-$ cd /home/user/my-code/my-app
-$ ccd .
-Starting container 'ccd-ltm-agent-01'...
-ubuntu@ccd-ltm-agent-01:/app$ exit
-exit
-```
-
-At first run you should call `claude login` inside the container to authenticate with your Claude account.
-
-Normally you would run `ccd` from the root of your app folder, which will be mounted to `/app` inside the container:
+### Build Image (ccd build)
 
 ```bash
-(ltm-agent) vagrant@vagrant:~/Code/ltm-agent$ ccd -v run .
-INFO: Preparing to run container: claude-code
-Starting container 'ccd-ltm-agent-01'...
-INFO: Starting container with:
-INFO:   App folder: /home/vagrant/Code/ltm-agent
-INFO:   Home folder: /home/vagrant/.claude-code-docker
-INFO:   Full command: docker run -it --rm --hostname ccd-ltm-agent-01 --name ccd-ltm-agent-01 -v /home/vagrant/Code/ltm-agent:/app -v /home/vagrant/.claude-code-docker/.claude:/home/ubuntu/.claude -v /home/vagrant/.claude-code-docker/.claude.json:/home/ubuntu/.claude.json -v /home/vagrant/.claude-code-docker/.gemini:/home/ubuntu/.gemini -v /home/vagrant/.claude-code-docker/.codex:/home/ubuntu/.codex -v /home/vagrant/.claude-code-docker/.copilot:/home/ubuntu/.copilot claude-code
-ubuntu@ccd-ltm-agent-01:/app$
-
-...continue with claude commands...
+ccd build [--with feature1,feature2,...] [--without feature3,feature4,...]
 ```
 
-### Builing image (ccd build)
-
-To build the Docker image, use:
-
-```bash
-ccd build [--with feature1,feature2,...] [--without feature3,feature
-```
-
-- `--with`: Comma-separated feature list to include in the image (default: all features)
-- `--without`: Comma-separated feature list to exclude from the image
+- `--with`: Comma-separated feature list to include (default: all features).
+- `--without`: Comma-separated feature list to exclude.
 
 Available build features:
+
 - `rust`
 - `claude`
 - `codex`
@@ -95,53 +67,102 @@ Available build features:
 - `opencode`
 - `copilot`
 
-### Running container (ccd run / ccd .)
+Examples:
 
 ```bash
-ccd run [app_folder] [--home home_folder] [-v|-vv|-vvv
+ccd build --with rust,gemini
+ccd build --without opencode,copilot
 ```
 
-- `app_folder`: Local directory mounted to `/app` (default: `./app`)
-- `--home`: Local directory for Claude config (default: `$HOME/.claude-code-docker`), only `.claude` and `.claude.json` files are used
-- `-v/-vv/-vvv`: Verbosity levels (warning/info/debug/verbose-debug)
+With that an image named `claude-code:latest` is built.
 
-#### Volume Mounts
+### Run Container (ccd run / ccd .)
 
-The following host paths are mounted into the container when it is run:
+```bash
+ccd run [app_folder] [--home home_folder] [-v|-vv|-vvv]
+```
 
-| Host Path                    | Container Path              |
-| ---------------------------- | --------------------------- |
-| `{app_folder}`               | `/app`                      |
-| `{home_folder}/.claude`      | `/home/ubuntu/.claude`      |
-| `{home_folder}/.claude.json` | `/home/ubuntu/.claude.json` |
-| `{home_folder}/.gemini`      | `/home/ubuntu/.gemini`      |
-| `{home_folder}/.codex`       | `/home/ubuntu/.codex`       |
-| `{home_folder}/.copilot`     | `/home/ubuntu/.copilot`     |
+- `app_folder`: Local directory mounted to `/app` (default: `.`).
+- `--home`: Local directory for assistant config (default: `$HOME/.claude-code-docker`).
+- `-v/-vv/-vvv`: Verbosity levels (warning/info/debug/verbose-debug).
+- Alias: `ccd .` is the same as `ccd run .`.
 
-#### Environment Initialization
+Examples:
 
-On container start, the entrypoint sets defaults and optionally sources an init file:
+```bash
+ccd run /path/to/app
+ccd .
+```
 
-- Default variables: `UV_PROJECT_ENVIRONMENT=/app/.venv2`, `CCD_APP_DIR=/app`.
-- Init file resolution order: `$CCD_INIT_FILE` (if set), `/app/.ccd_env`, `/app/.ccd-init.sh`.
-- If present, the init file is sourced, and you can override any defaults there.
+### Attach to Running Container (ccd attach)
 
-It is also possible to attach to a running container via `ccd attach` command.
-
-#### Attach to Running Container (ccd attach)
-
-When you have a running container started with `ccd run`, you can attach to it using:
+If a container started with `ccd run` is already running, attach to it:
 
 ```bash
 ccd attach
 ```
 
-## Development
+## Usage
 
-Use the `uv`, e.g.
+### Authentication
+
+On the first run, open a shell in the container and authenticate:
+
+```bash
+claude login
+```
+
+Other CLI login commands (available only if the client is installed; verify with each CLI's `--help` if needed):
+
+- `codex login`
+- `gemini auth login`
+- `opencode auth login`
+- `copilot auth login`
+
+When CLI tools are run, they also inform you if authentication is needed.
+
+## Configuration
+
+### Volume Mounts
+
+The following host paths are mounted into the container:
+
+- `{app_folder}` -> `/app` (container working directory)
+- `{home_folder}/.claude` -> `/home/ubuntu/.claude`
+- `{home_folder}/.claude.json` -> `/home/ubuntu/.claude.json`
+- `{home_folder}/.gemini` -> `/home/ubuntu/.gemini`
+- `{home_folder}/.codex` -> `/home/ubuntu/.codex`
+- `{home_folder}/.copilot` -> `/home/ubuntu/.copilot`
+
+The `--home` directory is expected to contain the assistant config folders shown above.
+
+### Init File
+
+On container start, the entrypoint sets defaults and optionally sources an init file:
+
+- Default variables: `UV_PROJECT_ENVIRONMENT=/app/.venv2`, `CCD_APP_DIR=/app`.
+- Init file resolution order: `$CCD_INIT_FILE` (if set), `/app/.ccd_env`, `/app/.ccd-init.sh`.
+- If present, the init file is sourced, and you can override defaults there.
+
+Example init file:
+
+```bash
+export UV_PROJECT_ENVIRONMENT=/app/.venv
+export CCD_APP_DIR=/app
+```
+
+## Development
 
 ```bash
 git clone git@github.com:sumkincpp/claude-code-docker.git
-cd ccd
+cd claude-code-docker
 uv run ccd --help
 ```
+
+## FAQ
+
+Q: Where do credentials live on the host?
+A: Under the `--home` directory (default: `$HOME/.claude-code-docker`), mounted into `/home/ubuntu`.
+
+Q: Can I use a custom container name?
+A: The name is auto-generated based on the app folder name as `ccd-{folder_name}`. You can attach via `ccd attach` without knowing it.
