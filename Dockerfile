@@ -23,7 +23,7 @@ RUN mkdir -p /app && \
 
 USER ubuntu
 
-ENV PATH="/home/ubuntu/.local/bin:$PATH"
+ENV PATH="/home/ubuntu/.local/bin:/home/ubuntu/.cargo/bin:$PATH"
 
 # https://github.com/nvm-sh/nvm/releases
 ARG NVM_VERSION=0.40.3
@@ -31,6 +31,14 @@ ARG NVM_VERSION=0.40.3
 # 22 - Maintenance LTS
 # 24 - Active LTS
 ARG NVM_NODE_VERSION=24
+
+# Optional build features (set --build-arg WITH_*=0 to disable)
+ARG WITH_RUST=1
+ARG WITH_CLAUDE=1
+ARG WITH_CODEX=1
+ARG WITH_GEMINI=1
+ARG WITH_OPENCODE=1
+ARG WITH_COPILOT=1
 
 # Install nvm and Node.js with proper environment
 RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v${NVM_VERSION}/install.sh | bash
@@ -43,16 +51,21 @@ RUN . $NVM_DIR/nvm.sh && \
     nvm install ${NVM_NODE_VERSION} && \
     nvm use ${NVM_NODE_VERSION} && \
     npm install -g npm@latest && \
-    npm install -g @anthropic-ai/claude-code && \
-    npm install -g @openai/codex  && \
-    npm install -g @google/gemini-cli && \
-    npm install -g opencode-ai && \
-    npm install -g @github/copilot && \
+    if [ "${WITH_CLAUDE}" = "1" ]; then npm install -g @anthropic-ai/claude-code; fi && \
+    if [ "${WITH_CODEX}" = "1" ]; then npm install -g @openai/codex; fi && \
+    if [ "${WITH_GEMINI}" = "1" ]; then npm install -g @google/gemini-cli; fi && \
+    if [ "${WITH_OPENCODE}" = "1" ]; then npm install -g opencode-ai; fi && \
+    if [ "${WITH_COPILOT}" = "1" ]; then npm install -g @github/copilot; fi && \
     echo "Let's symlink the nvm directory to the local bin directory" && \
     NODE_VERSION=$(nvm current) && \
     mkdir -p /home/ubuntu/.local/bin && \
     echo "Symlinking Node.js and npm binaries to /home/ubuntu/.local/bin" && \
     ln -sf /home/ubuntu/.nvm/versions/node/$NODE_VERSION/bin/* /home/ubuntu/.local/bin/
+
+# Install Rust toolchain only when requested
+RUN if [ "${WITH_RUST}" = "1" ]; then \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; \
+  fi
 
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -62,11 +75,11 @@ RUN node -v && \
     npm -v && \
     python3 --version && \
     uv --version && \
-    claude --version && \
-    gemini --version && \
-    codex --version && \
-    opencode --version && \
-    copilot --version
+    if [ "${WITH_CLAUDE}" = "1" ]; then claude --version; fi && \
+    if [ "${WITH_GEMINI}" = "1" ]; then gemini --version; fi && \
+    if [ "${WITH_CODEX}" = "1" ]; then codex --version; fi && \
+    if [ "${WITH_OPENCODE}" = "1" ]; then opencode --version; fi && \
+    if [ "${WITH_COPILOT}" = "1" ]; then copilot --version; fi
 
 WORKDIR /app
 

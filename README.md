@@ -1,6 +1,6 @@
 # Claude Code Docker
 
-**CCD** is python wrapper script to build and run Claude Code in a Docker container.
+**CCD** is python wrapper script to build and run Claude Code and other AI coding assistants inside Docker container.
 
 Docker Container is based on Ubuntu 24.04 with Node.js, python and uv installed.
 
@@ -12,11 +12,12 @@ Docker Container is based on Ubuntu 24.04 with Node.js, python and uv installed.
 
 ## Features
 
-- Following CLI clients are pre-installed inside the container:
+- Following CLI clients can be installed inside the container:
 
-  - `claude-code` - Anthropic Claude Code CLI
+  - `claude` - Anthropic Claude Code CLI
   - `codex` - OpenAI Codex CLI
   - `gemini` - Google Gemini CLI
+  - `opencode` - OpenCode CLI
   - `copilot` - GitHub Copilot CLI
 
 ## Requirements
@@ -36,6 +37,10 @@ $ cd claude-code-docker
 # Install tool globally as editable package pointing to current folder
 $ uv tool install . -e
 $ ccd build
+
+# Build options
+$ ccd build --with rust,gemini
+$ ccd build --without opencode,copilot
 
 # Run claude-code docker container with app folder mounted
 $ ccd run /home/user/my-code/my-app
@@ -71,7 +76,20 @@ It is also possible to attach to a running container:
 ccd attach
 ```
 
-### Arguments
+### Build Options
+
+- `--with`: Comma-separated feature list to include in the image (default: all features)
+- `--without`: Comma-separated feature list to exclude from the image
+
+Available build features:
+- `rust`
+- `claude`
+- `codex`
+- `gemini`
+- `opencode`
+- `copilot`
+
+### Run Arguments
 
 - `app_folder`: Local directory mounted to `/app` (default: `./app`)
 - `--home`: Local directory for Claude config (default: `$HOME/.claude-code-docker`), only `.claude` and `.claude.json` files are used
@@ -97,4 +115,3 @@ git clone git@github.com:sumkincpp/claude-code-docker.git
 cd ccd
 uv run ccd --help
 ```
-

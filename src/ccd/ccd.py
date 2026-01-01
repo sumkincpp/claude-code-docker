@@ -12,6 +12,14 @@ IMAGE_NAME = "claude-code"
 IMAGE_HOME_FOLDER = "/home/ubuntu"
 # ccdXX
 CONTAINER_NAME_BASE = "ccd"
+FEATURE_BUILD_ARGS = {
+    "rust": "WITH_RUST",
+    "claude": "WITH_CLAUDE",
+    "codex": "WITH_CODEX",
+    "gemini": "WITH_GEMINI",
+    "opencode": "WITH_OPENCODE",
+    "copilot": "WITH_COPILOT",
+}
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -49,15 +57,15 @@ def setup_logging(verbosity):
         subprocess_logger.setLevel(logging.DEBUG)
         subprocess_logger.addHandler(console_handler)
 
-    logger.debug(f"Logging configured with verbosity level: {verbosity}")
+    logger.debug("Logging configured with verbosity level: %s", verbosity)
 
 
 def build_image(image_name, docker_args=None):
     """Build the Docker image"""
-    logger.info(f"Building Docker image: {image_name}")
+    logger.info("Building Docker image: %s", image_name)
 
     build_command = f"docker build {docker_args} -t '{image_name}' - < Dockerfile"
-    logger.debug(f"Build command: {build_command}")
+    logger.debug("Build command: %s", build_command)
 
     try:
         logger.debug("Starting Docker build process")
@@ -67,7 +75,7 @@ def build_image(image_name, docker_args=None):
         logger.info("Build completed successfully!")
 
     except subprocess.CalledProcessError as e:
-        logger.error(f"Build failed with exit code {e.returncode}")
+        logger.error("Build failed with exit code %s", e.returncode)
         sys.exit(1)
     except FileNotFoundError:
         logger.error("Docker not found. Please ensure Docker is installed and in PATH")
@@ -92,13 +100,13 @@ class VolumeManager:
         # Create directories first
         for spec in self.path_specs:
             if spec.type == "folder":
-                logger.debug(f"Creating directory: {spec.path}")
+                logger.debug("Creating directory: %s", spec.path)
                 spec.path.mkdir(parents=True, exist_ok=True)
 
         # Create files after directories
         for spec in self.path_specs:
             if spec.type == "file":
-                logger.debug(f"Creating file: {spec.path}")
+                logger.debug("Creating file: %s", spec.path)
                 spec.path.touch(exist_ok=True)
 
     def get_volume_commands(self) -> List[str]:
@@ -126,12 +134,12 @@ def get_running_containers():
         running_containers = result.stdout.splitlines()
         # filter ones matching our pattern
         running_containers = [name for name in running_containers if name.startswith(CONTAINER_NAME_BASE + "-")]
-        logger.debug(f"Currently running containers: {running_containers}")
+        logger.debug("Currently running containers: %s", running_containers)
 
         return list(sorted(running_containers))
 
     except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to get running containers with exit code {e.returncode}")
+        logger.error("Failed to get running containers with exit code %s", e.returncode)
         sys.exit(1)
     except FileNotFoundError:
         logger.error("Docker not found. Please ensure Docker is installed and in PATH")
@@ -146,7 +154,7 @@ def get_next_free_container_name(folder: str):
     while True:
         candidate_name = f"{CONTAINER_NAME_BASE}-{folder}-{suffix:02d}"
         if candidate_name not in running_containers:
-            logger.debug(f"Selected container name: {candidate_name}")
+            logger.debug("Selected container name: %s", candidate_name)
             return candidate_name
         suffix += 1
 
@@ -186,14 +194,14 @@ def prompt_container_name():
 
 def run_container(image_name, app_folder, home_folder):
     """Run the Docker container with specified volumes"""
-    logger.info(f"Preparing to run container: {image_name}")
+    logger.info("Preparing to run container: %s", image_name)
 
     # Convert to absolute paths
     app_path = Path(app_folder).resolve()
     home_path = Path(home_folder).resolve()
 
-    logger.debug(f"App folder resolved to: {app_path}")
-    logger.debug(f"Home folder resolved to: {home_path}")
+    logger.debug("App folder resolved to: %s", app_path)
+    logger.debug("Home folder resolved to: %s", home_path)
 
     docker_home = Path(IMAGE_HOME_FOLDER)
 
@@ -233,9 +241,9 @@ def run_container(image_name, app_folder, home_folder):
     ]
 
     logger.info("Starting container with:")
-    logger.info(f"  App folder: {app_path}")
-    logger.info(f"  Home folder: {home_path}")
-    logger.info(f"  Full command: {' '.join(cmd)}")
+    logger.info("  App folder: %s", app_path)
+    logger.info("  Home folder: %s", home_path)
+    logger.info("  Full command: %s", " ".join(cmd))
 
     try:
         logger.debug("Executing docker run command")
@@ -243,7 +251,7 @@ def run_container(image_name, app_folder, home_folder):
         logger.info("Container execution completed successfully")
 
     except subprocess.CalledProcessError as e:
-        logger.error(f"Container run failed with exit code {e.returncode}")
+        logger.error("Container run failed with exit code %s", e.returncode)
         sys.exit(1)
     except KeyboardInterrupt:
         logger.info("Container stopped by user")
@@ -270,7 +278,7 @@ def attach_container():
         logger.debug("Executing docker exec command")
         subprocess.run(cmd)
     except subprocess.CalledProcessError as e:
-        logger.error(f"Attach failed with exit code {e.returncode}")
+        logger.error("Attach failed with exit code %s", e.returncode)
         sys.exit(1)
     except FileNotFoundError:
         logger.error("Docker not found. Please ensure Docker is installed and in PATH")
@@ -286,6 +294,16 @@ def main():
     command_parser.required = True
 
     build_parser = command_parser.add_parser("build", help="Build the Docker image")
+    build_parser.add_argument(
+        "--with",
+        dest="with_features",
+        help="Comma-separated feature list to include in the image (default: all features)",
+    )
+    build_parser.add_argument(
+        "--without",
+        dest="without_features",
+        help="Comma-separated feature list to exclude from the image",
+    )
 
     home_folder = Path.home() / ".claude-code-docker"
 
@@ -303,13 +321,52 @@ def main():
     # Setup logging based on verbosity
     setup_logging(args.verbose)
 
-    logger.debug(f"Arguments parsed: {args}")
-    logger.debug(f"Image name: {IMAGE_NAME}")
+    logger.debug("Arguments parsed: %s", args)
+    logger.debug("Image name: %s", IMAGE_NAME)
 
     try:
         if args.command == "build":
             logger.debug("Executing build command")
-            docker_args = shlex.join(unknown) if unknown else ""
+            docker_arg_list = []
+            if unknown:
+                docker_arg_list.extend(unknown)
+            if args.with_features and args.without_features:
+                logger.error("Use only one of --with or --without")
+                sys.exit(1)
+            if args.with_features:
+                requested = set()
+                for item in args.with_features.split(","):
+                    feature = item.strip()
+                    if feature:
+                        requested.add(feature)
+
+                unknown_features = requested - set(FEATURE_BUILD_ARGS.keys())
+                if unknown_features:
+                    logger.error("Unknown feature(s): %s", ", ".join(sorted(unknown_features)))
+                    logger.error("Available features: %s", ", ".join(sorted(FEATURE_BUILD_ARGS.keys())))
+                    sys.exit(1)
+
+                for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
+                    value = "1" if feature in requested else "0"
+                    docker_arg_list.extend(["--build-arg", f"{build_arg}={value}"])
+            elif args.without_features:
+                excluded = set()
+                for item in args.without_features.split(","):
+                    feature = item.strip()
+                    if feature:
+                        excluded.add(feature)
+
+                unknown_features = excluded - set(FEATURE_BUILD_ARGS.keys())
+                if unknown_features:
+                    logger.error("Unknown feature(s): %s", ", ".join(sorted(unknown_features)))
+                    logger.error("Available features: %s", ", ".join(sorted(FEATURE_BUILD_ARGS.keys())))
+                    sys.exit(1)
+
+                for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
+                    value = "0" if feature in excluded else "1"
+                    docker_arg_list.extend(["--build-arg", f"{build_arg}={value}"])
+
+            docker_args = shlex.join(docker_arg_list) if docker_arg_list else ""
             build_image(IMAGE_NAME, docker_args)
         elif args.command == "run":
             logger.debug("Executing run command")
