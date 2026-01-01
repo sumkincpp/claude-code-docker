@@ -12,6 +12,8 @@ Docker Container is based on Ubuntu 24.04 with Node.js, python and uv installed.
 
 ## Features
 
+By default all features are included, but you can customize the build to include or exclude specific features.
+
 - Following CLI clients can be installed inside the container:
 
   - `claude` - Anthropic Claude Code CLI
@@ -19,6 +21,10 @@ Docker Container is based on Ubuntu 24.04 with Node.js, python and uv installed.
   - `gemini` - Google Gemini CLI
   - `opencode` - OpenCode CLI
   - `copilot` - GitHub Copilot CLI
+
+- Optionally following runtimes can be installed:
+
+  - `rust` - Rust toolchain via rustup
 
 ## Requirements
 
@@ -70,21 +76,13 @@ ubuntu@ccd-ltm-agent-01:/app$
 ...continue with claude commands...
 ```
 
-### Environment Initialization
+### Builing image (ccd build)
 
-On container start, the entrypoint sets defaults and optionally sources an init file:
-
-- Default variables: `UV_PROJECT_ENVIRONMENT=/app/.venv2`, `CCD_APP_DIR=/app`.
-- Init file resolution order: `$CCD_INIT_FILE` (if set), `/app/.ccd_env`, `/app/.ccd-init.sh`.
-- If present, the init file is sourced, and you can override any defaults there.
-
-It is also possible to attach to a running container:
+To build the Docker image, use:
 
 ```bash
-ccd attach
+ccd build [--with feature1,feature2,...] [--without feature3,feature
 ```
-
-### Build Options
 
 - `--with`: Comma-separated feature list to include in the image (default: all features)
 - `--without`: Comma-separated feature list to exclude from the image
@@ -97,13 +95,19 @@ Available build features:
 - `opencode`
 - `copilot`
 
-### Run Arguments
+### Running container (ccd run / ccd .)
+
+```bash
+ccd run [app_folder] [--home home_folder] [-v|-vv|-vvv
+```
 
 - `app_folder`: Local directory mounted to `/app` (default: `./app`)
 - `--home`: Local directory for Claude config (default: `$HOME/.claude-code-docker`), only `.claude` and `.claude.json` files are used
 - `-v/-vv/-vvv`: Verbosity levels (warning/info/debug/verbose-debug)
 
-### Volume Mounts
+#### Volume Mounts
+
+The following host paths are mounted into the container when it is run:
 
 | Host Path                    | Container Path              |
 | ---------------------------- | --------------------------- |
@@ -113,6 +117,24 @@ Available build features:
 | `{home_folder}/.gemini`      | `/home/ubuntu/.gemini`      |
 | `{home_folder}/.codex`       | `/home/ubuntu/.codex`       |
 | `{home_folder}/.copilot`     | `/home/ubuntu/.copilot`     |
+
+#### Environment Initialization
+
+On container start, the entrypoint sets defaults and optionally sources an init file:
+
+- Default variables: `UV_PROJECT_ENVIRONMENT=/app/.venv2`, `CCD_APP_DIR=/app`.
+- Init file resolution order: `$CCD_INIT_FILE` (if set), `/app/.ccd_env`, `/app/.ccd-init.sh`.
+- If present, the init file is sourced, and you can override any defaults there.
+
+It is also possible to attach to a running container via `ccd attach` command.
+
+#### Attach to Running Container (ccd attach)
+
+When you have a running container started with `ccd run`, you can attach to it using:
+
+```bash
+ccd attach
+```
 
 ## Development
 
