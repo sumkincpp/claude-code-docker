@@ -70,6 +70,14 @@ ubuntu@ccd-ltm-agent-01:/app$
 ...continue with claude commands...
 ```
 
+### Environment Initialization
+
+On container start, the entrypoint sets defaults and optionally sources an init file:
+
+- Default variables: `UV_PROJECT_ENVIRONMENT=/app/.venv2`, `CCD_APP_DIR=/app`.
+- Init file resolution order: `$CCD_INIT_FILE` (if set), `/app/.ccd_env`, `/app/.ccd-init.sh`.
+- If present, the init file is sourced, and you can override any defaults there.
+
 It is also possible to attach to a running container:
 
 ```bash
