@@ -84,6 +84,7 @@ RUN node -v && \
 
 WORKDIR /app
 
+USER root
 # Entrypoint to initialize /app environment
 RUN cat <<'EOF' >/usr/local/bin/ccd-entrypoint
 #!/usr/bin/env bash
@@ -109,6 +110,7 @@ fi
 exec "$@"
 EOF
 RUN chmod +x /usr/local/bin/ccd-entrypoint
+USER ubuntu
 
 ENTRYPOINT ["/usr/local/bin/ccd-entrypoint"]
 CMD ["bash"]
