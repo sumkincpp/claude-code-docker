@@ -20,6 +20,18 @@ FEATURE_BUILD_ARGS = {
     "opencode": "WITH_OPENCODE",
     "copilot": "WITH_COPILOT",
 }
+VERSION_BUILD_ARGS = {
+    "nvm": "NVM_VERSION",
+    "node": "NVM_NODE_VERSION",
+    "npm": "NPM_VERSION",
+    "uv": "UV_VERSION",
+    "rustup": "RUSTUP_VERSION",
+    "claude": "CLAUDE_VERSION",
+    "codex": "CODEX_VERSION",
+    "gemini": "GEMINI_VERSION",
+    "opencode": "OPENCODE_VERSION",
+    "copilot": "COPILOT_VERSION",
+}
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -304,6 +316,13 @@ def main():
         dest="without_features",
         help="Comma-separated feature list to exclude from the image",
     )
+    # Add version arguments
+    for component in VERSION_BUILD_ARGS.keys():
+        build_parser.add_argument(
+            f"--{component}-version",
+            dest=f"{component}_version",
+            help=f"Version of {component} to install (default: latest or predefined)",
+        )
 
     home_folder = Path.home() / ".claude-code-docker"
 
@@ -365,6 +384,15 @@ def main():
                 for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
                     value = "0" if feature in excluded else "1"
                     docker_arg_list.extend(["--build-arg", f"{build_arg}={value}"])
+
+            # Process version arguments
+            for component, build_arg in sorted(VERSION_BUILD_ARGS.items()):
+                version_attr = f"{component}_version"
+                if hasattr(args, version_attr):
+                    version = getattr(args, version_attr)
+                    if version:
+                        logger.debug("Setting %s=%s", build_arg, version)
+                        docker_arg_list.extend(["--build-arg", f"{build_arg}={version}"])
 
             docker_args = shlex.join(docker_arg_list) if docker_arg_list else ""
             build_image(IMAGE_NAME, docker_args)
