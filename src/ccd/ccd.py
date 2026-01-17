@@ -101,6 +101,37 @@ class PathSpec:
     type: Literal["file", "folder"] = "folder"
 
 
+@dataclass
+class RunParameters:
+    image_name: str
+    app_folder: str
+    home_folder: str
+    memory: str = "1g"
+    cpus: str = "2"
+    root: bool = False
+
+    @classmethod
+    def from_args(cls, image_name: str, args, app_folder: str = None) -> "RunParameters":
+        """Create RunParameters from command line arguments
+
+        Args:
+            image_name: Name of the Docker image to use
+            args: Parsed command line arguments
+            app_folder: Override for app_folder (defaults to args.app_folder or ".")
+        """
+        if app_folder is None:
+            app_folder = args.app_folder if hasattr(args, 'app_folder') else "."
+
+        return cls(
+            image_name=image_name,
+            app_folder=app_folder,
+            home_folder=args.home,
+            memory=args.memory,
+            cpus=args.cpus,
+            root=args.root,
+        )
+
+
 class VolumeManager:
     def __init__(self, path_specs: List[PathSpec]):
         self.path_specs = path_specs
@@ -204,13 +235,13 @@ def prompt_container_name():
             print("Invalid input. Please enter a valid container name or number.")
 
 
-def run_container(image_name, app_folder, home_folder, memory="1g", cpus="2", root=False):
+def run_container(params: RunParameters):
     """Run the Docker container with specified volumes and resource limits"""
-    logger.info("Preparing to run container: %s", image_name)
+    logger.info("Preparing to run container: %s", params.image_name)
 
     # Convert to absolute paths
-    app_path = Path(app_folder).resolve()
-    home_path = Path(home_folder).resolve()
+    app_path = Path(params.app_folder).resolve()
+    home_path = Path(params.home_folder).resolve()
 
     logger.debug("App folder resolved to: %s", app_path)
     logger.debug("Home folder resolved to: %s", home_path)
@@ -245,26 +276,26 @@ def run_container(image_name, app_folder, home_folder, memory="1g", cpus="2", ro
         "-it",
         "--rm",
         "--memory",
-        memory,
+        params.memory,
         "--cpus",
-        cpus,
+        params.cpus,
         "--hostname",
         container_name,
         "--name",
         container_name,
     ]
 
-    if root:
+    if params.root:
         cmd.extend(["--user", "root"])
 
-    cmd.extend([*volume_cmds, image_name])
+    cmd.extend([*volume_cmds, params.image_name])
 
     logger.info("Starting container with:")
     logger.info("  App folder: %s", app_path)
     logger.info("  Home folder: %s", home_path)
-    logger.info("  Memory limit: %s", memory)
-    logger.info("  CPU limit: %s", cpus)
-    logger.info("  User: %s", "root" if root else "ubuntu")
+    logger.info("  Memory limit: %s", params.memory)
+    logger.info("  CPU limit: %s", params.cpus)
+    logger.info("  User: %s", "root" if params.root else "ubuntu")
     logger.info("  Full command: %s", " ".join(cmd))
 
     try:
@@ -423,10 +454,12 @@ def main():
             build_image(IMAGE_NAME, docker_args)
         elif args.command == "run":
             logger.debug("Executing run command")
-            run_container(IMAGE_NAME, args.app_folder, args.home, args.memory, args.cpus, args.root)
+            params = RunParameters.from_args(IMAGE_NAME, args)
+            run_container(params)
         elif args.command == ".":
             logger.debug("Executing run command with default . folder")
-            run_container(IMAGE_NAME, ".", args.home, args.memory, args.cpus, args.root)
+            params = RunParameters.from_args(IMAGE_NAME, args, app_folder=".")
+            run_container(params)
         elif args.command == "attach":
             logger.debug("Executing attach command")
             attach_container(args.root)
