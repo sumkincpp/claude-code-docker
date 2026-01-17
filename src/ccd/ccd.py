@@ -204,7 +204,7 @@ def prompt_container_name():
             print("Invalid input. Please enter a valid container name or number.")
 
 
-def run_container(image_name, app_folder, home_folder, memory="1g", cpus="2"):
+def run_container(image_name, app_folder, home_folder, memory="1g", cpus="2", root=False):
     """Run the Docker container with specified volumes and resource limits"""
     logger.info("Preparing to run container: %s", image_name)
 
@@ -252,15 +252,19 @@ def run_container(image_name, app_folder, home_folder, memory="1g", cpus="2"):
         container_name,
         "--name",
         container_name,
-        *volume_cmds,
-        image_name,
     ]
+
+    if root:
+        cmd.extend(["--user", "root"])
+
+    cmd.extend([*volume_cmds, image_name])
 
     logger.info("Starting container with:")
     logger.info("  App folder: %s", app_path)
     logger.info("  Home folder: %s", home_path)
     logger.info("  Memory limit: %s", memory)
     logger.info("  CPU limit: %s", cpus)
+    logger.info("  User: %s", "root" if root else "ubuntu")
     logger.info("  Full command: %s", " ".join(cmd))
 
     try:
@@ -279,7 +283,7 @@ def run_container(image_name, app_folder, home_folder, memory="1g", cpus="2"):
         sys.exit(1)
 
 
-def attach_container():
+def attach_container(root=False):
     """Attach to a running Docker container"""
     logger.info("Attaching to running Docker container: claude-code-container")
 
@@ -287,7 +291,12 @@ def attach_container():
 
     print(f"Attaching to container '{container_name}'...")
 
-    cmd = ["docker", "exec", "-it", container_name, "/bin/bash"]
+    cmd = ["docker", "exec", "-it"]
+
+    if root:
+        cmd.extend(["--user", "root"])
+
+    cmd.extend([container_name, "/bin/bash"])
 
     # ubuntu@7c3c7131cb15:/app$ exit
     # exit
@@ -301,6 +310,15 @@ def attach_container():
     except FileNotFoundError:
         logger.error("Docker not found. Please ensure Docker is installed and in PATH")
         sys.exit(1)
+
+
+def add_container_args(parser, home_folder):
+    """Add common container arguments to a parser"""
+    parser.add_argument("--home", default=home_folder, help=f"Home folder path (default: ${home_folder})")
+    parser.add_argument("--memory", default="1g", help="Memory limit for the container (default: 1g)")
+    parser.add_argument("--cpus", default="2", help="Number of CPUs for the container (default: 2)")
+    parser.add_argument("--root", action="store_true", help="Run container as root user instead of default ubuntu user")
+    return parser
 
 
 def main():
@@ -332,18 +350,15 @@ def main():
 
     home_folder = Path.home() / ".claude-code-docker"
 
-    dot_parser = command_parser.add_parser(".", help="Run the Docker container")
-    dot_parser.add_argument("--home", default=home_folder, help=f"Home folder path (default: ${home_folder})")
-    dot_parser.add_argument("--memory", default="1g", help="Memory limit for the container (default: 1g)")
-    dot_parser.add_argument("--cpus", default="2", help="Number of CPUs for the container (default: 2)")
+    dot_parser = command_parser.add_parser(".", help="Run the Docker container in current directory")
+    add_container_args(dot_parser, home_folder)
 
     run_parser = command_parser.add_parser("run", help="Run the Docker container")
     run_parser.add_argument("app_folder", nargs="?", default="./app", help="App folder path (default: ./app)")
-    run_parser.add_argument("--home", default=home_folder, help=f"Home folder path (default: ${home_folder})")
-    run_parser.add_argument("--memory", default="1g", help="Memory limit for the container (default: 1g)")
-    run_parser.add_argument("--cpus", default="2", help="Number of CPUs for the container (default: 2)")
+    add_container_args(run_parser, home_folder)
 
     attach_parser = command_parser.add_parser("attach", help="Attach to a running Docker container")
+    attach_parser.add_argument("--root", action="store_true", help="Attach as root user instead of default ubuntu user")
 
     args, unknown = parser.parse_known_args()
 
@@ -408,13 +423,13 @@ def main():
             build_image(IMAGE_NAME, docker_args)
         elif args.command == "run":
             logger.debug("Executing run command")
-            run_container(IMAGE_NAME, args.app_folder, args.home, args.memory, args.cpus)
+            run_container(IMAGE_NAME, args.app_folder, args.home, args.memory, args.cpus, args.root)
         elif args.command == ".":
             logger.debug("Executing run command with default . folder")
-            run_container(IMAGE_NAME, ".", args.home, args.memory, args.cpus)
+            run_container(IMAGE_NAME, ".", args.home, args.memory, args.cpus, args.root)
         elif args.command == "attach":
             logger.debug("Executing attach command")
-            attach_container()
+            attach_container(args.root)
     except KeyboardInterrupt:
         print("\nOperation cancelled by user")
         sys.exit(0)
