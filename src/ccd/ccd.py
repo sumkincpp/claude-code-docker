@@ -204,8 +204,8 @@ def prompt_container_name():
             print("Invalid input. Please enter a valid container name or number.")
 
 
-def run_container(image_name, app_folder, home_folder):
-    """Run the Docker container with specified volumes"""
+def run_container(image_name, app_folder, home_folder, memory="1g", cpus="2"):
+    """Run the Docker container with specified volumes and resource limits"""
     logger.info("Preparing to run container: %s", image_name)
 
     # Convert to absolute paths
@@ -244,6 +244,10 @@ def run_container(image_name, app_folder, home_folder):
         "run",
         "-it",
         "--rm",
+        "--memory",
+        memory,
+        "--cpus",
+        cpus,
         "--hostname",
         container_name,
         "--name",
@@ -255,6 +259,8 @@ def run_container(image_name, app_folder, home_folder):
     logger.info("Starting container with:")
     logger.info("  App folder: %s", app_path)
     logger.info("  Home folder: %s", home_path)
+    logger.info("  Memory limit: %s", memory)
+    logger.info("  CPU limit: %s", cpus)
     logger.info("  Full command: %s", " ".join(cmd))
 
     try:
@@ -328,10 +334,14 @@ def main():
 
     dot_parser = command_parser.add_parser(".", help="Run the Docker container")
     dot_parser.add_argument("--home", default=home_folder, help=f"Home folder path (default: ${home_folder})")
+    dot_parser.add_argument("--memory", default="1g", help="Memory limit for the container (default: 1g)")
+    dot_parser.add_argument("--cpus", default="2", help="Number of CPUs for the container (default: 2)")
 
     run_parser = command_parser.add_parser("run", help="Run the Docker container")
     run_parser.add_argument("app_folder", nargs="?", default="./app", help="App folder path (default: ./app)")
     run_parser.add_argument("--home", default=home_folder, help=f"Home folder path (default: ${home_folder})")
+    run_parser.add_argument("--memory", default="1g", help="Memory limit for the container (default: 1g)")
+    run_parser.add_argument("--cpus", default="2", help="Number of CPUs for the container (default: 2)")
 
     attach_parser = command_parser.add_parser("attach", help="Attach to a running Docker container")
 
@@ -398,10 +408,10 @@ def main():
             build_image(IMAGE_NAME, docker_args)
         elif args.command == "run":
             logger.debug("Executing run command")
-            run_container(IMAGE_NAME, args.app_folder, args.home)
+            run_container(IMAGE_NAME, args.app_folder, args.home, args.memory, args.cpus)
         elif args.command == ".":
             logger.debug("Executing run command with default . folder")
-            run_container(IMAGE_NAME, ".", args.home)
+            run_container(IMAGE_NAME, ".", args.home, args.memory, args.cpus)
         elif args.command == "attach":
             logger.debug("Executing attach command")
             attach_container()
