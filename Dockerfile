@@ -28,7 +28,8 @@ ENV UV_PROJECT_ENVIRONMENT="/app/.venv2"
 
 # Component versions (set --build-arg <COMPONENT>_VERSION=X.Y.Z to specify version)
 # https://github.com/nvm-sh/nvm/releases
-ARG NVM_VERSION=0.40.3
+# ARG NVM_VERSION=0.40.3
+ARG NVM_VERSION=latest
 # https://nodejs.org/en/about/previous-releases
 # 22 - Maintenance LTS
 # 24 - Active LTS
@@ -36,9 +37,11 @@ ARG NVM_NODE_VERSION=24
 ARG NPM_VERSION=latest
 ARG UV_VERSION=latest
 ARG RUSTUP_VERSION=latest
-ARG CLAUDE_VERSION=latest
+#ARG CLAUDE_VERSION=latest
+ARG CLAUDE_VERSION=2.0.76
 ARG CODEX_VERSION=latest
 ARG GEMINI_VERSION=latest
+ARG JULES_VERSION=latest
 ARG OPENCODE_VERSION=latest
 ARG COPILOT_VERSION=latest
 
@@ -47,11 +50,16 @@ ARG WITH_RUST=1
 ARG WITH_CLAUDE=1
 ARG WITH_CODEX=1
 ARG WITH_GEMINI=1
+ARG WITH_JULES=1
 ARG WITH_OPENCODE=1
 ARG WITH_COPILOT=1
 
-# Install nvm and Node.js with proper environment
-RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v${NVM_VERSION}/install.sh | bash
+# Install nvm - fetch latest if NVM_VERSION=latest, otherwise use provided version
+RUN if [ "$NVM_VERSION" = "latest" ]; then \
+        NVM_VERSION=$(curl -s https://api.github.com/repos/nvm-sh/nvm/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/'); \
+    fi \
+    && echo "Installing nvm version ${NVM_VERSION}"  \
+    && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v${NVM_VERSION}/install.sh | bash
 
 ENV NVM_DIR="/home/ubuntu/.nvm"
 # https://github.com/google-gemini/gemini-cli
@@ -64,6 +72,7 @@ RUN . $NVM_DIR/nvm.sh && \
     if [ "${WITH_CLAUDE}" = "1" ]; then npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION}; fi && \
     if [ "${WITH_CODEX}" = "1" ]; then npm install -g @openai/codex@${CODEX_VERSION}; fi && \
     if [ "${WITH_GEMINI}" = "1" ]; then npm install -g @google/gemini-cli@${GEMINI_VERSION}; fi && \
+    if [ "${WITH_JULES}" = "1" ]; then npm install -g @google/jules@${JULES_VERSION}; fi && \
     if [ "${WITH_OPENCODE}" = "1" ]; then npm install -g opencode-ai@${OPENCODE_VERSION}; fi && \
     if [ "${WITH_COPILOT}" = "1" ]; then npm install -g @github/copilot@${COPILOT_VERSION}; fi && \
     echo "Let's symlink the nvm directory to the local bin directory" && \
@@ -94,6 +103,7 @@ RUN node -v && \
     uv --version && \
     if [ "${WITH_CLAUDE}" = "1" ]; then claude --version; fi && \
     if [ "${WITH_GEMINI}" = "1" ]; then gemini --version; fi && \
+    if [ "${WITH_JULES}" = "1" ]; then jules --version; fi && \
     if [ "${WITH_CODEX}" = "1" ]; then codex --version; fi && \
     if [ "${WITH_OPENCODE}" = "1" ]; then opencode --version; fi && \
     if [ "${WITH_COPILOT}" = "1" ]; then copilot --version; fi
@@ -127,6 +137,9 @@ exec "$@"
 EOF
 RUN chmod +x /usr/local/bin/ccd-entrypoint
 USER ubuntu
+
+# claude code
+ENV DISABLE_AUTOUPDATER=1
 
 ENTRYPOINT ["/usr/local/bin/ccd-entrypoint"]
 CMD ["bash"]
