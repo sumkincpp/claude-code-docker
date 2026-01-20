@@ -19,6 +19,7 @@ FEATURE_BUILD_ARGS = {
     "gemini": "WITH_GEMINI",
     "opencode": "WITH_OPENCODE",
     "copilot": "WITH_COPILOT",
+    "jules": "WITH_JULES",
 }
 VERSION_BUILD_ARGS = {
     "nvm": "NVM_VERSION",
@@ -31,6 +32,7 @@ VERSION_BUILD_ARGS = {
     "gemini": "GEMINI_VERSION",
     "opencode": "OPENCODE_VERSION",
     "copilot": "COPILOT_VERSION",
+    "jules": "JULES_VERSION",
 }
 
 # Configure logging
@@ -120,7 +122,7 @@ class RunParameters:
             app_folder: Override for app_folder (defaults to args.app_folder or ".")
         """
         if app_folder is None:
-            app_folder = args.app_folder if hasattr(args, 'app_folder') else "."
+            app_folder = args.app_folder if hasattr(args, "app_folder") else "."
 
         return cls(
             image_name=image_name,

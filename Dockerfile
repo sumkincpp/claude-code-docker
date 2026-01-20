@@ -28,8 +28,8 @@ ENV UV_PROJECT_ENVIRONMENT="/app/.venv2"
 
 # Component versions (set --build-arg <COMPONENT>_VERSION=X.Y.Z to specify version)
 # https://github.com/nvm-sh/nvm/releases
-# ARG NVM_VERSION=0.40.3
-ARG NVM_VERSION=latest
+ARG NVM_VERSION=0.40.3
+# ARG NVM_VERSION=latest
 # https://nodejs.org/en/about/previous-releases
 # 22 - Maintenance LTS
 # 24 - Active LTS
@@ -37,6 +37,16 @@ ARG NVM_NODE_VERSION=24
 ARG NPM_VERSION=latest
 ARG UV_VERSION=latest
 ARG RUSTUP_VERSION=latest
+
+# Install nvm - fetch latest if NVM_VERSION=latest, otherwise use provided version
+RUN if [ "$NVM_VERSION" = "latest" ]; then \
+        echo "Fetching latest nvm version from GitHub"; \
+        resp=$(curl --fail-with-body -s https://api.github.com/repos/nvm-sh/nvm/releases/latest); \
+        NVM_VERSION=$(printf '%s' "$resp" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/'); \
+    fi \
+    && echo "Installing nvm version ${NVM_VERSION}"  \
+    && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v${NVM_VERSION}/install.sh | bash
+
 #ARG CLAUDE_VERSION=latest
 ARG CLAUDE_VERSION=2.0.76
 ARG CODEX_VERSION=latest
@@ -53,13 +63,6 @@ ARG WITH_GEMINI=1
 ARG WITH_JULES=1
 ARG WITH_OPENCODE=1
 ARG WITH_COPILOT=1
-
-# Install nvm - fetch latest if NVM_VERSION=latest, otherwise use provided version
-RUN if [ "$NVM_VERSION" = "latest" ]; then \
-        NVM_VERSION=$(curl -s https://api.github.com/repos/nvm-sh/nvm/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/'); \
-    fi \
-    && echo "Installing nvm version ${NVM_VERSION}"  \
-    && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v${NVM_VERSION}/install.sh | bash
 
 ENV NVM_DIR="/home/ubuntu/.nvm"
 # https://github.com/google-gemini/gemini-cli
