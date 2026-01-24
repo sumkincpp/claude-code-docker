@@ -354,7 +354,8 @@ def add_container_args(parser: argparse.ArgumentParser, home_folder: Path) -> ar
     return parser
 
 
-def main():
+def main() -> None:
+    """Main entry point for the ccd command line tool"""
     parser = argparse.ArgumentParser(description="Run claude-code Docker container")
 
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity level (can be used multiple times: -v, -vv, -vvv)")
