@@ -6,7 +6,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Literal
+from typing import List, Literal, Set
 
 IMAGE_NAME = "claude-code"
 IMAGE_HOME_FOLDER = "/home/ubuntu"
@@ -39,7 +39,7 @@ VERSION_BUILD_ARGS = {
 logger = logging.getLogger(__name__)
 
 
-def setup_logging(verbosity):
+def setup_logging(verbosity: int) -> None:
     """Configure logging based on verbosity level"""
     # Set up console handler
     console_handler = logging.StreamHandler(sys.stdout)
@@ -74,7 +74,7 @@ def setup_logging(verbosity):
     logger.debug("Logging configured with verbosity level: %s", verbosity)
 
 
-def build_image(image_name, docker_args=None):
+def build_image(image_name: str, docker_args: str) -> None:
     """Build the Docker image"""
     logger.info("Building Docker image: %s", image_name)
 
@@ -84,7 +84,7 @@ def build_image(image_name, docker_args=None):
     try:
         logger.debug("Starting Docker build process")
         # Stream output directly to console in real-time
-        result = subprocess.run(build_command, shell=True, check=True)
+        _ = subprocess.run(build_command, shell=True, check=True)
 
         logger.info("Build completed successfully!")
 
@@ -113,7 +113,7 @@ class RunParameters:
     root: bool = False
 
     @classmethod
-    def from_args(cls, image_name: str, args, app_folder: str = None) -> "RunParameters":
+    def from_args(cls, image_name: str, args: argparse.Namespace, app_folder: str | None = None) -> "RunParameters":
         """Create RunParameters from command line arguments
 
         Args:
@@ -156,7 +156,7 @@ class VolumeManager:
 
     def get_volume_commands(self) -> List[str]:
         """Generate volume mount commands for docker."""
-        volume_cmds = []
+        volume_cmds: List[str] = []
         for spec in self.path_specs:
             if not spec.path.exists():
                 raise FileNotFoundError(f"Source path does not exist: {spec.path}")
@@ -191,7 +191,7 @@ def get_running_containers():
         sys.exit(1)
 
 
-def get_next_free_container_name(folder: str):
+def get_next_free_container_name(folder: str) -> str:
     """Check current running docker containers and when starting a new one, avoid name conflict by appending a number suffix"""
     running_containers = get_running_containers()
 
@@ -316,7 +316,7 @@ def run_container(params: RunParameters):
         sys.exit(1)
 
 
-def attach_container(root=False):
+def attach_container(root: bool) -> None:
     """Attach to a running Docker container"""
     logger.info("Attaching to running Docker container: claude-code-container")
 
@@ -345,7 +345,7 @@ def attach_container(root=False):
         sys.exit(1)
 
 
-def add_container_args(parser, home_folder):
+def add_container_args(parser: argparse.ArgumentParser, home_folder: Path) -> argparse.ArgumentParser:
     """Add common container arguments to a parser"""
     parser.add_argument("--home", default=home_folder, help=f"Home folder path (default: ${home_folder})")
     parser.add_argument("--memory", default="1g", help="Memory limit for the container (default: 1g)")
@@ -404,14 +404,14 @@ def main():
     try:
         if args.command == "build":
             logger.debug("Executing build command")
-            docker_arg_list = []
+            docker_arg_list: List[str] = []
             if unknown:
                 docker_arg_list.extend(unknown)
             if args.with_features and args.without_features:
                 logger.error("Use only one of --with or --without")
                 sys.exit(1)
             if args.with_features:
-                requested = set()
+                requested: Set[str] = set()
                 for item in args.with_features.split(","):
                     feature = item.strip()
                     if feature:
@@ -427,7 +427,7 @@ def main():
                     value = "1" if feature in requested else "0"
                     docker_arg_list.extend(["--build-arg", f"{build_arg}={value}"])
             elif args.without_features:
-                excluded = set()
+                excluded: Set[str] = set()
                 for item in args.without_features.split(","):
                     feature = item.strip()
                     if feature:
