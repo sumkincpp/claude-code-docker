@@ -47,8 +47,8 @@ RUN if [ "$NVM_VERSION" = "latest" ]; then \
     && echo "Installing nvm version ${NVM_VERSION}"  \
     && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v${NVM_VERSION}/install.sh | bash
 
-#ARG CLAUDE_VERSION=latest
-ARG CLAUDE_VERSION=2.0.76
+ARG CLAUDE_VERSION=latest
+# ARG CLAUDE_VERSION=2.0.76
 ARG CODEX_VERSION=latest
 ARG GEMINI_VERSION=latest
 ARG JULES_VERSION=latest
@@ -60,9 +60,12 @@ ARG WITH_RUST=1
 ARG WITH_CLAUDE=1
 ARG WITH_CODEX=1
 ARG WITH_GEMINI=1
-ARG WITH_JULES=1
-ARG WITH_OPENCODE=1
 ARG WITH_COPILOT=1
+ARG WITH_OPENCODE=1
+
+# Disabled features by default
+ARG WITH_JULES=0
+
 
 ENV NVM_DIR="/home/ubuntu/.nvm"
 # https://github.com/google-gemini/gemini-cli
@@ -110,6 +113,12 @@ RUN node -v && \
     if [ "${WITH_CODEX}" = "1" ]; then codex --version; fi && \
     if [ "${WITH_OPENCODE}" = "1" ]; then opencode --version; fi && \
     if [ "${WITH_COPILOT}" = "1" ]; then copilot --version; fi
+
+#####################################################################################
+# Install local-claude wrapper for Ollama integration
+#####################################################################################
+COPY --chown=ubuntu:ubuntu local-claude/local-claude /home/ubuntu/.local/bin/local-claude
+RUN chmod +x /home/ubuntu/.local/bin/local-claude
 
 WORKDIR /app
 

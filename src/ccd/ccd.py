@@ -78,7 +78,7 @@ def build_image(image_name: str, docker_args: str) -> None:
     """Build the Docker image"""
     logger.info("Building Docker image: %s", image_name)
 
-    build_command = f"docker build {docker_args} -t '{image_name}' - < Dockerfile"
+    build_command = f"docker build {docker_args} -f Dockerfile -t '{image_name}' ."
     logger.debug("Build command: %s", build_command)
 
     try:

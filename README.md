@@ -72,6 +72,9 @@ Examples:
 ```bash
 ccd build --with rust,gemini
 ccd build --without opencode,copilot
+#
+# building image without cache
+ccd -vv build --no-cache
 ```
 
 With that an image named `claude-code:latest` is built.
@@ -120,6 +123,73 @@ Other CLI login commands (available only if the client is installed; verify with
 - `copilot auth login`
 
 When CLI tools are run, they also inform you if authentication is needed.
+
+## Local Claude: Using Claude Code with Ollama
+
+The image includes `local-claude`, a wrapper that connects Claude Code to Ollama for local model execution.
+
+### Setup
+
+Create a `.local-claude.env` file in your application directory:
+
+```bash
+# Ollama server URL
+OLLAMA_BASE_URL=http://localhost:11434
+
+# Default model (must support tools!)
+OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
+```
+
+Start CCD container and use `local-claude` to run Claude Code with Ollama.
+
+The wrapper searches for config in:
+
+1. `~/.local-claude.env`
+2. Current directory `.local-claude.env`
+3. `/app/.local-claude.env`
+
+### Usage
+
+List available models with tool support detection:
+
+```bash
+local-claude list
+```
+
+Run Claude Code with Ollama:
+
+```bash
+local-claude run                      # Use default model
+local-claude run -m qwen2.5-coder:7b  # Use specific model
+```
+
+The wrapper:
+
+- Verifies Ollama connection
+- Checks model availability
+- Validates tool support via `/api/show` endpoint
+- Sets required environment variables
+- Launches Claude Code
+
+### Model Requirements
+
+Models must support tool/function calling.
+
+Ollama recommends the following models for use with Claude Code:
+
+Local models -
+
+- gpt-oss:20b
+- qwen3-coder
+
+Cloud models -
+
+- glm-4.7:cloud
+- minimax-m2.1:cloud
+
+Use models with 32K+ context length for best results.
+
+For more details, refer to the Ollama documentation: [Claude Code with Anthropic API compatibility](https://ollama.com/blog/claude)
 
 ## Configuration
 
