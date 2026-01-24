@@ -35,6 +35,7 @@ Exclude `rust` with `--without rust` to keep the image smaller.
 - `gemini` - Google Gemini CLI
 - `opencode` - OpenCode CLI
 - `copilot` - GitHub Copilot CLI
+- `jules` - Jules CLI (disabled by default)
 
 ### Runtimes
 
@@ -64,6 +65,7 @@ Available build features:
 - `claude`
 - `codex`
 - `gemini`
+- `jules`
 - `opencode`
 - `copilot`
 
@@ -128,6 +130,8 @@ When CLI tools are run, they also inform you if authentication is needed.
 
 The image includes `local-claude`, a wrapper that connects Claude Code to Ollama for local model execution.
 
+Learn more about Ollama at [Claude Code with Anthropic API compatibility](https://ollama.com/blog/claude)
+
 ### Setup
 
 Create a `.local-claude.env` file in your application directory:
@@ -163,13 +167,15 @@ local-claude run                      # Use default model
 local-claude run -m qwen2.5-coder:7b  # Use specific model
 ```
 
+> Note: changing models with "/model <NAME>" is supported in claude-code CLI
+
 The wrapper:
 
 - Verifies Ollama connection
 - Checks model availability
 - Validates tool support via `/api/show` endpoint
-- Sets required environment variables
-- Launches Claude Code
+- Sets required environment variables for local model usage
+- Launches claude-code CLI
 
 ### Model Requirements
 
@@ -188,8 +194,6 @@ Cloud models -
 - minimax-m2.1:cloud
 
 Use models with 32K+ context length for best results.
-
-For more details, refer to the Ollama documentation: [Claude Code with Anthropic API compatibility](https://ollama.com/blog/claude)
 
 ## Configuration
 
@@ -231,8 +235,8 @@ uv run ccd --help
 
 ## FAQ
 
-Q: Where do credentials live on the host?
-A: Under the `--home` directory (default: `$HOME/.claude-code-docker`), mounted into `/home/ubuntu`.
+- Q: Where do credentials live on the host?
+- A: Under the `--home` directory (default: `$HOME/.claude-code-docker`), mounted into `/home/ubuntu`.
 
-Q: Can I use a custom container name?
-A: The name is auto-generated based on the app folder name as `ccd-{folder_name}`. You can attach via `ccd attach` without knowing it.
+- Q: Can I use a custom container name?
+- A: The name is auto-generated based on the app folder name as `ccd-{folder_name}`. You can attach via `ccd attach` without knowing it.

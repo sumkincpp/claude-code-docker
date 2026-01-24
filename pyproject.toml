@@ -1,7 +1,7 @@
 [project]
 name = "ccd"
-version = "0.1.1"
-description = "Claude Code Docker - A Docker image for running Claude Code with Node.js and uv"
+version = "0.1.2"
+description = "Claude Code Docker - A Docker image for running Coding Agents like Claude Code, Gemini, Codex, Copilot and more."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
