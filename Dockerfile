@@ -39,6 +39,7 @@ ARG UV_VERSION=latest
 ARG RUSTUP_VERSION=latest
 
 # Install nvm - fetch latest if NVM_VERSION=latest, otherwise use provided version
+# API Github can be blocked in some environments, consider setting up a build arg with a specific version
 RUN if [ "$NVM_VERSION" = "latest" ]; then \
         echo "Fetching latest nvm version from GitHub"; \
         resp=$(curl --fail-with-body -s https://api.github.com/repos/nvm-sh/nvm/releases/latest); \
