@@ -14,6 +14,8 @@ RUN apt-get update && apt-get upgrade -y && \
     gnupg \
     lsb-release \
     ripgrep \
+    make \
+    diffutils \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app directory and set permissions
@@ -61,6 +63,7 @@ ARG WITH_RUST=1
 ARG WITH_CLAUDE=1
 ARG WITH_CODEX=1
 ARG WITH_GEMINI=1
+ARG WITH_JULES=0
 ARG WITH_COPILOT=1
 ARG WITH_OPENCODE=1
 
