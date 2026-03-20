@@ -1,0 +1,20 @@
+[project]
+name = "local-claude"
+version = "0.1.0"
+description = "Local claude wrapper for Claude Code"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+]
+
+[project.scripts]
+local-claude = "local_claude.__main__:main"
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length=160

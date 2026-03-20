@@ -121,8 +121,11 @@ RUN node -v && \
 #####################################################################################
 # Install local-claude wrapper for Ollama integration
 #####################################################################################
-COPY --chown=ubuntu:ubuntu local-claude/local-claude /home/ubuntu/.local/bin/local-claude
-RUN chmod +x /home/ubuntu/.local/bin/local-claude
+COPY --chown=ubuntu:ubuntu copy2image/ /opt/
+
+RUN cd /opt/local-claude/ && \
+  uv tool install . && \
+  local-claude --help
 
 WORKDIR /app
 
@@ -131,9 +134,6 @@ USER root
 RUN cat <<'EOF' >/usr/local/bin/ccd-entrypoint
 #!/usr/bin/env bash
 set -e
-
-export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/app/.venv2}"
-export CCD_APP_DIR="${CCD_APP_DIR:-/app}"
 
 init_file=""
 if [ -n "${CCD_INIT_FILE:-}" ]; then
@@ -154,6 +154,8 @@ EOF
 RUN chmod +x /usr/local/bin/ccd-entrypoint
 USER ubuntu
 
+ENV UV_PROJECT_ENVIRONMENT="/app/.venv2"
+ENV CCD_APP_DIR="/app"
 # claude code
 ENV DISABLE_AUTOUPDATER=1
 
