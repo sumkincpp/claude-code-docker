@@ -13,6 +13,13 @@ Base image: Ubuntu 24.04 with Node.js, Python, and uv installed.
 - Keep a consistent, reproducible runtime across projects.
 - Use separate app folders without cross-project conflicts.
 
+## Similar Projects
+
+- [Bubblewrap](https://github.com/containers/bubblewrap)
+- [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/)
+- [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell)
+- [claude-code-devcontainer](https://github.com/trailofbits/claude-code-devcontainer)
+
 ## Quickstart
 
 ```bash
