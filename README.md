@@ -19,6 +19,7 @@ Base image: Ubuntu 24.04 with Node.js, Python, and uv installed.
 - [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/)
 - [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell)
 - [claude-code-devcontainer](https://github.com/trailofbits/claude-code-devcontainer)
+- [TencentCloud/CubeSandbox](https://github.com/TencentCloud/CubeSandbox)
 
 ## Quickstart
 
