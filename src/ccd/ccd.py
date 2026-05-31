@@ -231,11 +231,96 @@ def build_image(image_name: str, docker_args: str) -> None:
         sys.exit(1)
 
 
+
+@dataclass
+class MountConfig:
+    host: str
+    container: str
+    type: Literal["file", "folder"] = "folder"
+    optional: bool = False
+    readonly: bool = False
+
+    def to_path_spec(self) -> "PathSpec":
+        return PathSpec(
+            path=Path(self.host).expanduser(),
+            volume_mapping=Path(self.container),
+            type=self.type,
+            optional=self.optional,
+            readonly=self.readonly,
+        )
+
+
+@dataclass
+class RunConfig:
+    memory: str | None = None
+    cpus: str | None = None
+    mounts: List[MountConfig] = field(default_factory=list)
+
+    @classmethod
+    def load(cls, path: Path) -> "RunConfig":
+        """Load [run] section from a ccd.toml file; returns defaults if absent."""
+        if not path.exists():
+            return cls()
+        if tomllib is None:
+            logger.error("Config file found but tomllib is unavailable. Upgrade to Python 3.11+ or install 'tomli'.")
+            sys.exit(1)
+
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+
+        run = data.get("run", {})
+        raw_mounts = run.get("mounts", [])
+
+        mounts: List[MountConfig] = []
+        for m in raw_mounts:
+            if "host" not in m or "container" not in m:
+                logger.error("Each [[run.mounts]] entry must have 'host' and 'container' keys")
+                sys.exit(1)
+            mounts.append(MountConfig(
+                host=m["host"],
+                container=m["container"],
+                type=m.get("type", "folder"),
+                optional=m.get("optional", False),
+                readonly=m.get("readonly", False),
+            ))
+
+        return cls(
+            memory=run.get("memory"),
+            cpus=run.get("cpus"),
+            mounts=mounts,
+        )
+
+    def merge(self, local: "RunConfig") -> "RunConfig":
+        """Return a new config with local values taking precedence over self (global).
+
+        Scalar fields (memory, cpus): local wins if set, otherwise fall back to global.
+        Mounts: global mounts first, then local mounts (both are applied).
+        """
+        return RunConfig(
+            memory=local.memory if local.memory is not None else self.memory,
+            cpus=local.cpus if local.cpus is not None else self.cpus,
+            mounts=self.mounts + local.mounts,
+        )
+
+    @classmethod
+    def load_effective(cls, local_path: Path, global_path: Path = GLOBAL_CONFIG_PATH) -> "RunConfig":
+        """Load and merge global and local configs. Local file wins for scalars; mounts are combined."""
+        global_cfg = cls.load(global_path)
+        local_cfg = cls.load(local_path)
+        effective = global_cfg.merge(local_cfg)
+        if global_cfg.mounts or global_cfg.memory or global_cfg.cpus:
+            logger.debug("Global run config loaded from: %s", global_path)
+        logger.debug("Effective run config: %s", effective)
+        return effective
+
+
 @dataclass
 class PathSpec:
     path: Path
     volume_mapping: Path
     type: Literal["file", "folder"] = "folder"
+    optional: bool = False
+    readonly: bool = False
 
 
 @dataclass
@@ -419,6 +504,10 @@ def run_container(params: RunParameters):
         PathSpec(path=home_path / ".codex", volume_mapping=docker_home / ".codex"),
         # Copilot config
         PathSpec(path=home_path / ".copilot", volume_mapping=docker_home / ".copilot"),
+        # Pi config
+        PathSpec(path=home_path / ".pi", volume_mapping=docker_home / ".pi"),
+        # Extra mounts from ccd.toml [run] section
+        *[m.to_path_spec() for m in params.extra_mounts],
     ]
 
     volume_manager = VolumeManager(path_specs)
@@ -596,63 +685,22 @@ def main() -> None:
     try:
         if args.command == "build":
             logger.debug("Executing build command")
-            docker_arg_list: List[str] = []
-            if unknown:
-                docker_arg_list.extend(unknown)
-            if args.with_features and args.without_features:
-                logger.error("Use only one of --with or --without")
-                sys.exit(1)
-            if args.with_features:
-                requested: Set[str] = set()
-                for item in args.with_features.split(","):
-                    feature = item.strip()
-                    if feature:
-                        requested.add(feature)
-
-                unknown_features = requested - set(FEATURE_BUILD_ARGS.keys())
-                if unknown_features:
-                    logger.error("Unknown feature(s): %s", ", ".join(sorted(unknown_features)))
-                    logger.error("Available features: %s", ", ".join(sorted(FEATURE_BUILD_ARGS.keys())))
-                    sys.exit(1)
-
-                for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
-                    value = "1" if feature in requested else "0"
-                    docker_arg_list.extend(["--build-arg", f"{build_arg}={value}"])
-            elif args.without_features:
-                excluded: Set[str] = set()
-                for item in args.without_features.split(","):
-                    feature = item.strip()
-                    if feature:
-                        excluded.add(feature)
-
-                unknown_features = excluded - set(FEATURE_BUILD_ARGS.keys())
-                if unknown_features:
-                    logger.error("Unknown feature(s): %s", ", ".join(sorted(unknown_features)))
-                    logger.error("Available features: %s", ", ".join(sorted(FEATURE_BUILD_ARGS.keys())))
-                    sys.exit(1)
-
-                for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
-                    value = "0" if feature in excluded else "1"
-                    docker_arg_list.extend(["--build-arg", f"{build_arg}={value}"])
-
-            # Process version arguments
-            for component, build_arg in sorted(VERSION_BUILD_ARGS.items()):
-                version_attr = f"{component}_version"
-                if hasattr(args, version_attr):
-                    version = getattr(args, version_attr)
-                    if version:
-                        logger.debug("Setting %s=%s", build_arg, version)
-                        docker_arg_list.extend(["--build-arg", f"{build_arg}={version}"])
-
-            docker_args = shlex.join(docker_arg_list) if docker_arg_list else ""
-            build_image(IMAGE_NAME, docker_args)
+            config = BuildConfig.load(Path(CONFIG_FILE_NAME)).apply_cli(args)
+            config.validate()
+            logger.debug("Effective build config: %s", config)
+            docker_arg_list = config.to_docker_build_args(unknown)
+            build_image(IMAGE_NAME, shlex.join(docker_arg_list))
         elif args.command == "run":
             logger.debug("Executing run command")
-            params = RunParameters.from_args(IMAGE_NAME, args)
+            run_config = RunConfig.load_effective(Path(CONFIG_FILE_NAME))
+            params = RunParameters.from_args(IMAGE_NAME, args, run_config=run_config)
+            logger.debug("Effective run config: %s", run_config)
             run_container(params)
         elif args.command == ".":
             logger.debug("Executing run command with default . folder")
-            params = RunParameters.from_args(IMAGE_NAME, args, app_folder=".")
+            run_config = RunConfig.load_effective(Path(CONFIG_FILE_NAME))
+            params = RunParameters.from_args(IMAGE_NAME, args, run_config=run_config, app_folder=".")
+            logger.debug("Effective run config: %s", run_config)
             run_container(params)
         elif args.command == "attach":
             logger.debug("Executing attach command")
