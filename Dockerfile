@@ -93,6 +93,7 @@ RUN . $NVM_DIR/nvm.sh && \
 RUN PNPM_CLI_MIN_RELEASE_AGE_DAYS="${NPM_CLI_MIN_RELEASE_AGE_DAYS}" \
     PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS="${NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS}" \
     PNPM_AUDIT_FORCE_FIX_COMPONENTS="${NPM_AUDIT_FORCE_FIX_COMPONENTS}" \
+    NODE_USE_ENV_PROXY=1 \
     node /home/ubuntu/.local/bin/install-clis.mjs && \
     ln -sf /home/ubuntu/.nvm/versions/node/v${NVM_NODE_VERSION}/bin/* /home/ubuntu/.local/bin/
 
