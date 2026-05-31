@@ -1,0 +1,64 @@
+[build]
+# Minimum release age in days for npm packages resolved by tag (e.g. latest)
+npm_min_release_age_days = 7
+
+# Components exempt from the minimum release age check
+npm_min_release_age_ignore_components = []
+
+# Components whose npm audit failure should be ignored
+# npm_audit_ignore_components = []
+
+# Components that run 'npm audit fix --force' before audit checks
+npm_audit_force_fix_components = ["pi"]
+
+# Include only these features (mutually exclusive with without_features)
+# with_features = ["claude", "codex", "gemini", "opencode", "copilot", "jules", "pi", "rust"]
+with_features = ["codex", "claude", "pi", "copilot", "rust"]
+#
+# Exclude these features
+# without_features = []
+
+[versions]
+# nvm = "0.40.3"
+# node = "22"
+# npm = "11.3.0"
+# uv = "0.7.2"
+# rustup = "1.28.2"
+# claude = "latest"
+# codex = "latest"
+# gemini = "latest"
+# opencode = "latest"
+# copilot = "latest"
+# jules = "latest"
+# pi = "latest"
+
+# ---------------------------------------------------------------------------
+# Run configuration — applied when using `ccd run` or `ccd .`
+# CLI flags (--memory, --cpus) override these values.
+# ---------------------------------------------------------------------------
+[run]
+
+# memory = "4g"
+# cpus  = "4"
+
+[[run.mounts]]
+host      = "~/.local/share/uv"
+container = "/home/ubuntu/.local/share/uv"
+optional  = true
+
+#[[run.mounts]]
+#host      = "~/.gitconfig"
+#container = "/home/ubuntu/.gitconfig"
+#type      = "file"
+#optional  = true
+
+#[[run.mounts]]
+#host      = "~/.config/git"
+#container = "/home/ubuntu/.config/git"
+#optional  = true
+
+# [[run.mounts]]
+# host      = "~/.ssh"
+# container = "/home/ubuntu/.ssh"
+# readonly  = true
+# optional  = true
