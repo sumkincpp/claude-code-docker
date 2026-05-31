@@ -14,12 +14,14 @@ RUN apt-get update && apt-get upgrade -y && \
     gnupg \
     lsb-release \
     ripgrep \
+    bubblewrap \
+    vim \
     && rm -rf /var/lib/apt/lists/*
 
-# Create app directory and set permissions
-RUN mkdir -p /app && \
-    chown -R ubuntu:ubuntu /app && \
-    chmod -R 755 /app
+# Create app and metadata directories and set permissions
+RUN mkdir -p /app /metadata && \
+    chown -R ubuntu:ubuntu /app /metadata && \
+    chmod -R 755 /app /metadata
 
 USER ubuntu
 
