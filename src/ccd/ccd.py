@@ -246,26 +246,39 @@ class RunParameters:
     memory: str = "1g"
     cpus: str = "2"
     root: bool = False
+    extra_mounts: List[MountConfig] = field(default_factory=list)
 
     @classmethod
-    def from_args(cls, image_name: str, args: argparse.Namespace, app_folder: str | None = None) -> "RunParameters":
-        """Create RunParameters from command line arguments
+    def from_args(cls, image_name: str, args: argparse.Namespace, run_config: "RunConfig | None" = None, app_folder: str | None = None) -> "RunParameters":
+        """Create RunParameters from CLI args, optionally layering a RunConfig on top.
 
         Args:
             image_name: Name of the Docker image to use
             args: Parsed command line arguments
+            run_config: Optional config loaded from ccd.toml (config values are
+                        overridden by any explicitly supplied CLI args)
             app_folder: Override for app_folder (defaults to args.app_folder or ".")
         """
         if app_folder is None:
             app_folder = args.app_folder if hasattr(args, "app_folder") else "."
 
+        memory = args.memory
+        cpus = args.cpus
+        if run_config is not None:
+            # CLI args take precedence; fall back to config values when CLI uses defaults
+            if run_config.memory is not None and args.memory == "1g":
+                memory = run_config.memory
+            if run_config.cpus is not None and args.cpus == "2":
+                cpus = run_config.cpus
+
         return cls(
             image_name=image_name,
             app_folder=app_folder,
             home_folder=args.home,
-            memory=args.memory,
-            cpus=args.cpus,
+            memory=memory,
+            cpus=cpus,
             root=args.root,
+            extra_mounts=run_config.mounts if run_config is not None else [],
         )
 
 
@@ -279,12 +292,16 @@ class VolumeManager:
 
         # Create directories first
         for spec in self.path_specs:
+            if spec.optional:
+                continue
             if spec.type == "folder":
                 logger.debug("Creating directory: %s", spec.path)
                 spec.path.mkdir(parents=True, exist_ok=True)
 
         # Create files after directories
         for spec in self.path_specs:
+            if spec.optional:
+                continue
             if spec.type == "file":
                 logger.debug("Creating file: %s", spec.path)
                 spec.path.touch(exist_ok=True)
@@ -294,8 +311,14 @@ class VolumeManager:
         volume_cmds: List[str] = []
         for spec in self.path_specs:
             if not spec.path.exists():
+                if spec.optional:
+                    logger.debug("Optional path does not exist, skipping: %s", spec.path)
+                    continue
                 raise FileNotFoundError(f"Source path does not exist: {spec.path}")
-            volume_cmds.extend(["-v", f"{spec.path}:{spec.volume_mapping}"])
+            mount_str = f"{spec.path.resolve()}:{spec.volume_mapping}"
+            if spec.readonly:
+                mount_str += ":ro"
+            volume_cmds.extend(["-v", mount_str])
         return volume_cmds
 
 
