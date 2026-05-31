@@ -4,14 +4,25 @@ import logging
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import List, Literal, Set
+
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ImportError:
+        tomllib = None  # type: ignore[assignment]
 
 IMAGE_NAME = "claude-code"
 IMAGE_HOME_FOLDER = "/home/ubuntu"
 # ccdXX
 CONTAINER_NAME_BASE = "ccd"
+CONFIG_FILE_NAME = "ccd.toml"
+GLOBAL_CONFIG_PATH = Path.home() / ".config" / "ccd" / "ccd.toml"
+
 FEATURE_BUILD_ARGS = {
     "rust": "WITH_RUST",
     "claude": "WITH_CLAUDE",
@@ -74,6 +85,128 @@ def setup_logging(verbosity: int) -> None:
         subprocess_logger.addHandler(console_handler)
 
     logger.debug("Logging configured with verbosity level: %s", verbosity)
+
+
+def _parse_comma_set(value: str) -> set[str]:
+    return {v.strip() for v in value.split(",") if v.strip()}
+
+
+@dataclass
+class BuildConfig:
+    with_features: set[str] | None = None
+    without_features: set[str] | None = None
+    force: bool = False
+    npm_min_release_age_days: int = 7
+    npm_audit_ignore_components: set[str] = field(default_factory=set)
+    npm_audit_force_fix_components: set[str] = field(default_factory=set)
+    npm_min_release_age_ignore_components: set[str] = field(default_factory=set)
+    versions: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def load(cls, path: Path) -> "BuildConfig":
+        """Load config from a TOML file; returns defaults if file does not exist."""
+        if not path.exists():
+            return cls()
+        if tomllib is None:
+            logger.error("Config file found but tomllib is unavailable. Upgrade to Python 3.11+ or install 'tomli'.")
+            sys.exit(1)
+
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+
+        build = data.get("build", {})
+        versions_data = data.get("versions", {})
+
+        def as_set(v: object) -> set[str]:
+            if isinstance(v, list):
+                return {str(x).strip() for x in v if str(x).strip()}
+            if isinstance(v, str):
+                return _parse_comma_set(v)
+            return set()
+
+        return cls(
+            with_features=as_set(build["with_features"]) if "with_features" in build else None,
+            without_features=as_set(build["without_features"]) if "without_features" in build else None,
+            npm_min_release_age_days=build.get("npm_min_release_age_days", 7),
+            npm_audit_ignore_components=as_set(build.get("npm_audit_ignore_components", [])),
+            npm_audit_force_fix_components=as_set(build.get("npm_audit_force_fix_components", [])),
+            npm_min_release_age_ignore_components=as_set(build.get("npm_min_release_age_ignore_components", [])),
+            versions={k: str(v) for k, v in versions_data.items() if k in VERSION_BUILD_ARGS},
+        )
+
+    def apply_cli(self, args: argparse.Namespace) -> "BuildConfig":
+        """Return a new config with explicitly provided CLI args applied on top."""
+        config = replace(self)
+
+        if args.with_features is not None:
+            config.with_features = _parse_comma_set(args.with_features)
+        if args.without_features is not None:
+            config.without_features = _parse_comma_set(args.without_features)
+        if args.force:
+            config.force = True
+        if args.npm_min_release_age_days is not None:
+            config.npm_min_release_age_days = args.npm_min_release_age_days
+        if args.npm_audit_ignore_components is not None:
+            config.npm_audit_ignore_components = _parse_comma_set(args.npm_audit_ignore_components)
+        if args.npm_audit_force_fix_components is not None:
+            config.npm_audit_force_fix_components = _parse_comma_set(args.npm_audit_force_fix_components)
+        if args.npm_min_release_age_ignore_components is not None:
+            config.npm_min_release_age_ignore_components = _parse_comma_set(args.npm_min_release_age_ignore_components)
+
+        for component in VERSION_BUILD_ARGS:
+            version = getattr(args, f"{component}_version", None)
+            if version is not None:
+                config.versions[component] = version
+
+        return config
+
+    def validate(self) -> None:
+        if self.with_features is not None and self.without_features is not None:
+            logger.error("Use only one of --with or --without")
+            sys.exit(1)
+        for features in (self.with_features, self.without_features):
+            if features is None:
+                continue
+            unknown = features - set(FEATURE_BUILD_ARGS.keys())
+            if unknown:
+                logger.error("Unknown feature(s): %s", ", ".join(sorted(unknown)))
+                logger.error("Available features: %s", ", ".join(sorted(FEATURE_BUILD_ARGS.keys())))
+                sys.exit(1)
+
+    def to_docker_build_args(self, extra_args: list[str]) -> list[str]:
+        """Produce the full list of docker-build flag tokens."""
+        result: list[str] = [*extra_args]
+
+        if self.force:
+            logger.debug("Force flag set, disabling Docker layer caching")
+            result.append("--no-cache")
+
+        if self.with_features is not None:
+            for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
+                result.extend(["--build-arg", f"{build_arg}={'1' if feature in self.with_features else '0'}"])
+        elif self.without_features is not None:
+            for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
+                result.extend(["--build-arg", f"{build_arg}={'0' if feature in self.without_features else '1'}"])
+
+        logger.debug("Setting NPM_CLI_MIN_RELEASE_AGE_DAYS=%s", self.npm_min_release_age_days)
+        result.extend(["--build-arg", f"NPM_CLI_MIN_RELEASE_AGE_DAYS={self.npm_min_release_age_days}"])
+
+        if self.npm_audit_ignore_components:
+            logger.debug("Setting NPM_AUDIT_IGNORE_COMPONENTS=%s", self.npm_audit_ignore_components)
+            result.extend(["--build-arg", f"NPM_AUDIT_IGNORE_COMPONENTS={','.join(sorted(self.npm_audit_ignore_components))}"])
+        if self.npm_audit_force_fix_components:
+            logger.debug("Setting NPM_AUDIT_FORCE_FIX_COMPONENTS=%s", self.npm_audit_force_fix_components)
+            result.extend(["--build-arg", f"NPM_AUDIT_FORCE_FIX_COMPONENTS={','.join(sorted(self.npm_audit_force_fix_components))}"])
+        if self.npm_min_release_age_ignore_components:
+            logger.debug("Setting NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS=%s", self.npm_min_release_age_ignore_components)
+            result.extend(["--build-arg", f"NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS={','.join(sorted(self.npm_min_release_age_ignore_components))}"])
+
+        for component, build_arg in sorted(VERSION_BUILD_ARGS.items()):
+            if component in self.versions:
+                logger.debug("Setting %s=%s", build_arg, self.versions[component])
+                result.extend(["--build-arg", f"{build_arg}={self.versions[component]}"])
+
+        return result
 
 
 def build_image(image_name: str, docker_args: str) -> None:
@@ -376,12 +509,40 @@ def main() -> None:
         dest="without_features",
         help="Comma-separated feature list to exclude from the image",
     )
+    build_parser.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="Build without cache (disable Docker layer caching)",
+    )
+    build_parser.add_argument(
+        "--npm-min-release-age-days",
+        dest="npm_min_release_age_days",
+        default=None,
+        type=int,
+        help="Minimum age in days for npm CLI package resolution when using tags such as latest (default: 7)",
+    )
+    build_parser.add_argument(
+        "--npm-min-release-age-ignore-components",
+        dest="npm_min_release_age_ignore_components",
+        help="Comma-separated npm CLI components exempt from the minimum release age check",
+    )
+    build_parser.add_argument(
+        "--npm-audit-ignore-components",
+        dest="npm_audit_ignore_components",
+        help="Comma-separated npm CLI components whose final npm audit failure should be ignored",
+    )
+    build_parser.add_argument(
+        "--npm-audit-force-fix-components",
+        dest="npm_audit_force_fix_components",
+        help="Comma-separated npm CLI components that should run npm audit fix --force before final audit checks",
+    )
     # Add version arguments
     for component in VERSION_BUILD_ARGS.keys():
         build_parser.add_argument(
             f"--{component}-version",
             dest=f"{component}_version",
-            help=f"Version of {component} to install (default: latest or predefined)",
+            help=f"Version of {component} to install (default: Dockerfile value)",
         )
 
     home_folder = Path.home() / ".claude-code-docker"
