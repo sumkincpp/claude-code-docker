@@ -4,14 +4,25 @@ import logging
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import List, Literal, Set
+
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ImportError:
+        tomllib = None  # type: ignore[assignment]
 
 IMAGE_NAME = "claude-code"
 IMAGE_HOME_FOLDER = "/home/ubuntu"
 # ccdXX
 CONTAINER_NAME_BASE = "ccd"
+CONFIG_FILE_NAME = "ccd.toml"
+GLOBAL_CONFIG_PATH = Path.home() / ".config" / "ccd" / "ccd.toml"
+
 FEATURE_BUILD_ARGS = {
     "rust": "WITH_RUST",
     "claude": "WITH_CLAUDE",
@@ -20,6 +31,7 @@ FEATURE_BUILD_ARGS = {
     "opencode": "WITH_OPENCODE",
     "copilot": "WITH_COPILOT",
     "jules": "WITH_JULES",
+    "pi": "WITH_PI",
 }
 VERSION_BUILD_ARGS = {
     "nvm": "NVM_VERSION",
@@ -33,6 +45,7 @@ VERSION_BUILD_ARGS = {
     "opencode": "OPENCODE_VERSION",
     "copilot": "COPILOT_VERSION",
     "jules": "JULES_VERSION",
+    "pi": "PI_VERSION",
 }
 
 # Configure logging
@@ -74,6 +87,128 @@ def setup_logging(verbosity: int) -> None:
     logger.debug("Logging configured with verbosity level: %s", verbosity)
 
 
+def _parse_comma_set(value: str) -> set[str]:
+    return {v.strip() for v in value.split(",") if v.strip()}
+
+
+@dataclass
+class BuildConfig:
+    with_features: set[str] | None = None
+    without_features: set[str] | None = None
+    force: bool = False
+    npm_min_release_age_days: int = 7
+    npm_audit_ignore_components: set[str] = field(default_factory=set)
+    npm_audit_force_fix_components: set[str] = field(default_factory=set)
+    npm_min_release_age_ignore_components: set[str] = field(default_factory=set)
+    versions: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def load(cls, path: Path) -> "BuildConfig":
+        """Load config from a TOML file; returns defaults if file does not exist."""
+        if not path.exists():
+            return cls()
+        if tomllib is None:
+            logger.error("Config file found but tomllib is unavailable. Upgrade to Python 3.11+ or install 'tomli'.")
+            sys.exit(1)
+
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+
+        build = data.get("build", {})
+        versions_data = data.get("versions", {})
+
+        def as_set(v: object) -> set[str]:
+            if isinstance(v, list):
+                return {str(x).strip() for x in v if str(x).strip()}
+            if isinstance(v, str):
+                return _parse_comma_set(v)
+            return set()
+
+        return cls(
+            with_features=as_set(build["with_features"]) if "with_features" in build else None,
+            without_features=as_set(build["without_features"]) if "without_features" in build else None,
+            npm_min_release_age_days=build.get("npm_min_release_age_days", 7),
+            npm_audit_ignore_components=as_set(build.get("npm_audit_ignore_components", [])),
+            npm_audit_force_fix_components=as_set(build.get("npm_audit_force_fix_components", [])),
+            npm_min_release_age_ignore_components=as_set(build.get("npm_min_release_age_ignore_components", [])),
+            versions={k: str(v) for k, v in versions_data.items() if k in VERSION_BUILD_ARGS},
+        )
+
+    def apply_cli(self, args: argparse.Namespace) -> "BuildConfig":
+        """Return a new config with explicitly provided CLI args applied on top."""
+        config = replace(self)
+
+        if args.with_features is not None:
+            config.with_features = _parse_comma_set(args.with_features)
+        if args.without_features is not None:
+            config.without_features = _parse_comma_set(args.without_features)
+        if args.force:
+            config.force = True
+        if args.npm_min_release_age_days is not None:
+            config.npm_min_release_age_days = args.npm_min_release_age_days
+        if args.npm_audit_ignore_components is not None:
+            config.npm_audit_ignore_components = _parse_comma_set(args.npm_audit_ignore_components)
+        if args.npm_audit_force_fix_components is not None:
+            config.npm_audit_force_fix_components = _parse_comma_set(args.npm_audit_force_fix_components)
+        if args.npm_min_release_age_ignore_components is not None:
+            config.npm_min_release_age_ignore_components = _parse_comma_set(args.npm_min_release_age_ignore_components)
+
+        for component in VERSION_BUILD_ARGS:
+            version = getattr(args, f"{component}_version", None)
+            if version is not None:
+                config.versions[component] = version
+
+        return config
+
+    def validate(self) -> None:
+        if self.with_features is not None and self.without_features is not None:
+            logger.error("Use only one of --with or --without")
+            sys.exit(1)
+        for features in (self.with_features, self.without_features):
+            if features is None:
+                continue
+            unknown = features - set(FEATURE_BUILD_ARGS.keys())
+            if unknown:
+                logger.error("Unknown feature(s): %s", ", ".join(sorted(unknown)))
+                logger.error("Available features: %s", ", ".join(sorted(FEATURE_BUILD_ARGS.keys())))
+                sys.exit(1)
+
+    def to_docker_build_args(self, extra_args: list[str]) -> list[str]:
+        """Produce the full list of docker-build flag tokens."""
+        result: list[str] = [*extra_args]
+
+        if self.force:
+            logger.debug("Force flag set, disabling Docker layer caching")
+            result.append("--no-cache")
+
+        if self.with_features is not None:
+            for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
+                result.extend(["--build-arg", f"{build_arg}={'1' if feature in self.with_features else '0'}"])
+        elif self.without_features is not None:
+            for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
+                result.extend(["--build-arg", f"{build_arg}={'0' if feature in self.without_features else '1'}"])
+
+        logger.debug("Setting NPM_CLI_MIN_RELEASE_AGE_DAYS=%s", self.npm_min_release_age_days)
+        result.extend(["--build-arg", f"NPM_CLI_MIN_RELEASE_AGE_DAYS={self.npm_min_release_age_days}"])
+
+        if self.npm_audit_ignore_components:
+            logger.debug("Setting NPM_AUDIT_IGNORE_COMPONENTS=%s", self.npm_audit_ignore_components)
+            result.extend(["--build-arg", f"NPM_AUDIT_IGNORE_COMPONENTS={','.join(sorted(self.npm_audit_ignore_components))}"])
+        if self.npm_audit_force_fix_components:
+            logger.debug("Setting NPM_AUDIT_FORCE_FIX_COMPONENTS=%s", self.npm_audit_force_fix_components)
+            result.extend(["--build-arg", f"NPM_AUDIT_FORCE_FIX_COMPONENTS={','.join(sorted(self.npm_audit_force_fix_components))}"])
+        if self.npm_min_release_age_ignore_components:
+            logger.debug("Setting NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS=%s", self.npm_min_release_age_ignore_components)
+            result.extend(["--build-arg", f"NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS={','.join(sorted(self.npm_min_release_age_ignore_components))}"])
+
+        for component, build_arg in sorted(VERSION_BUILD_ARGS.items()):
+            if component in self.versions:
+                logger.debug("Setting %s=%s", build_arg, self.versions[component])
+                result.extend(["--build-arg", f"{build_arg}={self.versions[component]}"])
+
+        return result
+
+
 def build_image(image_name: str, docker_args: str) -> None:
     """Build the Docker image"""
     logger.info("Building Docker image: %s", image_name)
@@ -96,11 +231,96 @@ def build_image(image_name: str, docker_args: str) -> None:
         sys.exit(1)
 
 
+
+@dataclass
+class MountConfig:
+    host: str
+    container: str
+    type: Literal["file", "folder"] = "folder"
+    optional: bool = False
+    readonly: bool = False
+
+    def to_path_spec(self) -> "PathSpec":
+        return PathSpec(
+            path=Path(self.host).expanduser(),
+            volume_mapping=Path(self.container),
+            type=self.type,
+            optional=self.optional,
+            readonly=self.readonly,
+        )
+
+
+@dataclass
+class RunConfig:
+    memory: str | None = None
+    cpus: str | None = None
+    mounts: List[MountConfig] = field(default_factory=list)
+
+    @classmethod
+    def load(cls, path: Path) -> "RunConfig":
+        """Load [run] section from a ccd.toml file; returns defaults if absent."""
+        if not path.exists():
+            return cls()
+        if tomllib is None:
+            logger.error("Config file found but tomllib is unavailable. Upgrade to Python 3.11+ or install 'tomli'.")
+            sys.exit(1)
+
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+
+        run = data.get("run", {})
+        raw_mounts = run.get("mounts", [])
+
+        mounts: List[MountConfig] = []
+        for m in raw_mounts:
+            if "host" not in m or "container" not in m:
+                logger.error("Each [[run.mounts]] entry must have 'host' and 'container' keys")
+                sys.exit(1)
+            mounts.append(MountConfig(
+                host=m["host"],
+                container=m["container"],
+                type=m.get("type", "folder"),
+                optional=m.get("optional", False),
+                readonly=m.get("readonly", False),
+            ))
+
+        return cls(
+            memory=run.get("memory"),
+            cpus=run.get("cpus"),
+            mounts=mounts,
+        )
+
+    def merge(self, local: "RunConfig") -> "RunConfig":
+        """Return a new config with local values taking precedence over self (global).
+
+        Scalar fields (memory, cpus): local wins if set, otherwise fall back to global.
+        Mounts: global mounts first, then local mounts (both are applied).
+        """
+        return RunConfig(
+            memory=local.memory if local.memory is not None else self.memory,
+            cpus=local.cpus if local.cpus is not None else self.cpus,
+            mounts=self.mounts + local.mounts,
+        )
+
+    @classmethod
+    def load_effective(cls, local_path: Path, global_path: Path = GLOBAL_CONFIG_PATH) -> "RunConfig":
+        """Load and merge global and local configs. Local file wins for scalars; mounts are combined."""
+        global_cfg = cls.load(global_path)
+        local_cfg = cls.load(local_path)
+        effective = global_cfg.merge(local_cfg)
+        if global_cfg.mounts or global_cfg.memory or global_cfg.cpus:
+            logger.debug("Global run config loaded from: %s", global_path)
+        logger.debug("Effective run config: %s", effective)
+        return effective
+
+
 @dataclass
 class PathSpec:
     path: Path
     volume_mapping: Path
     type: Literal["file", "folder"] = "folder"
+    optional: bool = False
+    readonly: bool = False
 
 
 @dataclass
@@ -111,26 +331,39 @@ class RunParameters:
     memory: str = "1g"
     cpus: str = "2"
     root: bool = False
+    extra_mounts: List[MountConfig] = field(default_factory=list)
 
     @classmethod
-    def from_args(cls, image_name: str, args: argparse.Namespace, app_folder: str | None = None) -> "RunParameters":
-        """Create RunParameters from command line arguments
+    def from_args(cls, image_name: str, args: argparse.Namespace, run_config: "RunConfig | None" = None, app_folder: str | None = None) -> "RunParameters":
+        """Create RunParameters from CLI args, optionally layering a RunConfig on top.
 
         Args:
             image_name: Name of the Docker image to use
             args: Parsed command line arguments
+            run_config: Optional config loaded from ccd.toml (config values are
+                        overridden by any explicitly supplied CLI args)
             app_folder: Override for app_folder (defaults to args.app_folder or ".")
         """
         if app_folder is None:
             app_folder = args.app_folder if hasattr(args, "app_folder") else "."
 
+        memory = args.memory
+        cpus = args.cpus
+        if run_config is not None:
+            # CLI args take precedence; fall back to config values when CLI uses defaults
+            if run_config.memory is not None and args.memory == "1g":
+                memory = run_config.memory
+            if run_config.cpus is not None and args.cpus == "2":
+                cpus = run_config.cpus
+
         return cls(
             image_name=image_name,
             app_folder=app_folder,
             home_folder=args.home,
-            memory=args.memory,
-            cpus=args.cpus,
+            memory=memory,
+            cpus=cpus,
             root=args.root,
+            extra_mounts=run_config.mounts if run_config is not None else [],
         )
 
 
@@ -144,12 +377,16 @@ class VolumeManager:
 
         # Create directories first
         for spec in self.path_specs:
+            if spec.optional:
+                continue
             if spec.type == "folder":
                 logger.debug("Creating directory: %s", spec.path)
                 spec.path.mkdir(parents=True, exist_ok=True)
 
         # Create files after directories
         for spec in self.path_specs:
+            if spec.optional:
+                continue
             if spec.type == "file":
                 logger.debug("Creating file: %s", spec.path)
                 spec.path.touch(exist_ok=True)
@@ -159,8 +396,14 @@ class VolumeManager:
         volume_cmds: List[str] = []
         for spec in self.path_specs:
             if not spec.path.exists():
+                if spec.optional:
+                    logger.debug("Optional path does not exist, skipping: %s", spec.path)
+                    continue
                 raise FileNotFoundError(f"Source path does not exist: {spec.path}")
-            volume_cmds.extend(["-v", f"{spec.path}:{spec.volume_mapping}"])
+            mount_str = f"{spec.path.resolve()}:{spec.volume_mapping}"
+            if spec.readonly:
+                mount_str += ":ro"
+            volume_cmds.extend(["-v", mount_str])
         return volume_cmds
 
 
@@ -261,6 +504,10 @@ def run_container(params: RunParameters):
         PathSpec(path=home_path / ".codex", volume_mapping=docker_home / ".codex"),
         # Copilot config
         PathSpec(path=home_path / ".copilot", volume_mapping=docker_home / ".copilot"),
+        # Pi config
+        PathSpec(path=home_path / ".pi", volume_mapping=docker_home / ".pi"),
+        # Extra mounts from ccd.toml [run] section
+        *[m.to_path_spec() for m in params.extra_mounts],
     ]
 
     volume_manager = VolumeManager(path_specs)
@@ -285,6 +532,11 @@ def run_container(params: RunParameters):
         container_name,
         "--name",
         container_name,
+        # Allow bwrap (bubblewrap) to create user namespaces inside the container.
+        # Docker's default seccomp profile blocks the clone syscall flags required
+        # by bwrap even when kernel.unprivileged_userns_clone=1 is set on the host.
+        "--security-opt",
+        "seccomp=unconfined",
     ]
 
     if params.root:
@@ -374,12 +626,40 @@ def main() -> None:
         dest="without_features",
         help="Comma-separated feature list to exclude from the image",
     )
+    build_parser.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="Build without cache (disable Docker layer caching)",
+    )
+    build_parser.add_argument(
+        "--npm-min-release-age-days",
+        dest="npm_min_release_age_days",
+        default=None,
+        type=int,
+        help="Minimum age in days for npm CLI package resolution when using tags such as latest (default: 7)",
+    )
+    build_parser.add_argument(
+        "--npm-min-release-age-ignore-components",
+        dest="npm_min_release_age_ignore_components",
+        help="Comma-separated npm CLI components exempt from the minimum release age check",
+    )
+    build_parser.add_argument(
+        "--npm-audit-ignore-components",
+        dest="npm_audit_ignore_components",
+        help="Comma-separated npm CLI components whose final npm audit failure should be ignored",
+    )
+    build_parser.add_argument(
+        "--npm-audit-force-fix-components",
+        dest="npm_audit_force_fix_components",
+        help="Comma-separated npm CLI components that should run npm audit fix --force before final audit checks",
+    )
     # Add version arguments
     for component in VERSION_BUILD_ARGS.keys():
         build_parser.add_argument(
             f"--{component}-version",
             dest=f"{component}_version",
-            help=f"Version of {component} to install (default: latest or predefined)",
+            help=f"Version of {component} to install (default: Dockerfile value)",
         )
 
     home_folder = Path.home() / ".claude-code-docker"
@@ -405,63 +685,22 @@ def main() -> None:
     try:
         if args.command == "build":
             logger.debug("Executing build command")
-            docker_arg_list: List[str] = []
-            if unknown:
-                docker_arg_list.extend(unknown)
-            if args.with_features and args.without_features:
-                logger.error("Use only one of --with or --without")
-                sys.exit(1)
-            if args.with_features:
-                requested: Set[str] = set()
-                for item in args.with_features.split(","):
-                    feature = item.strip()
-                    if feature:
-                        requested.add(feature)
-
-                unknown_features = requested - set(FEATURE_BUILD_ARGS.keys())
-                if unknown_features:
-                    logger.error("Unknown feature(s): %s", ", ".join(sorted(unknown_features)))
-                    logger.error("Available features: %s", ", ".join(sorted(FEATURE_BUILD_ARGS.keys())))
-                    sys.exit(1)
-
-                for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
-                    value = "1" if feature in requested else "0"
-                    docker_arg_list.extend(["--build-arg", f"{build_arg}={value}"])
-            elif args.without_features:
-                excluded: Set[str] = set()
-                for item in args.without_features.split(","):
-                    feature = item.strip()
-                    if feature:
-                        excluded.add(feature)
-
-                unknown_features = excluded - set(FEATURE_BUILD_ARGS.keys())
-                if unknown_features:
-                    logger.error("Unknown feature(s): %s", ", ".join(sorted(unknown_features)))
-                    logger.error("Available features: %s", ", ".join(sorted(FEATURE_BUILD_ARGS.keys())))
-                    sys.exit(1)
-
-                for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
-                    value = "0" if feature in excluded else "1"
-                    docker_arg_list.extend(["--build-arg", f"{build_arg}={value}"])
-
-            # Process version arguments
-            for component, build_arg in sorted(VERSION_BUILD_ARGS.items()):
-                version_attr = f"{component}_version"
-                if hasattr(args, version_attr):
-                    version = getattr(args, version_attr)
-                    if version:
-                        logger.debug("Setting %s=%s", build_arg, version)
-                        docker_arg_list.extend(["--build-arg", f"{build_arg}={version}"])
-
-            docker_args = shlex.join(docker_arg_list) if docker_arg_list else ""
-            build_image(IMAGE_NAME, docker_args)
+            config = BuildConfig.load(Path(CONFIG_FILE_NAME)).apply_cli(args)
+            config.validate()
+            logger.debug("Effective build config: %s", config)
+            docker_arg_list = config.to_docker_build_args(unknown)
+            build_image(IMAGE_NAME, shlex.join(docker_arg_list))
         elif args.command == "run":
             logger.debug("Executing run command")
-            params = RunParameters.from_args(IMAGE_NAME, args)
+            run_config = RunConfig.load_effective(Path(CONFIG_FILE_NAME))
+            params = RunParameters.from_args(IMAGE_NAME, args, run_config=run_config)
+            logger.debug("Effective run config: %s", run_config)
             run_container(params)
         elif args.command == ".":
             logger.debug("Executing run command with default . folder")
-            params = RunParameters.from_args(IMAGE_NAME, args, app_folder=".")
+            run_config = RunConfig.load_effective(Path(CONFIG_FILE_NAME))
+            params = RunParameters.from_args(IMAGE_NAME, args, run_config=run_config, app_folder=".")
+            logger.debug("Effective run config: %s", run_config)
             run_container(params)
         elif args.command == "attach":
             logger.debug("Executing attach command")

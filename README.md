@@ -43,6 +43,7 @@ Exclude `rust` with `--without rust` to keep the image smaller.
 - `gemini` - Google Gemini CLI
 - `opencode` - OpenCode CLI
 - `copilot` - GitHub Copilot CLI
+- `pi` - Pi Coding Agent CLI
 - `jules` - Jules CLI (disabled by default)
 
 ### Runtimes
@@ -76,6 +77,7 @@ Available build features:
 - `jules`
 - `opencode`
 - `copilot`
+- `pi`
 
 Examples:
 
@@ -89,22 +91,54 @@ ccd -vv build --no-cache
 
 With that an image named `claude-code:latest` is built.
 
+### Npm Install Policy
+
+The Docker image resolves npm-distributed CLIs at build time through a release-age policy.
+If a CLI version is left at `latest`, the build installs `package@latest` with npm's `--before <cutoff>` filter, so npm picks the newest allowed top-level version and applies the same cutoff while resolving transitives.
+
+Default:
+
+```bash
+NPM_CLI_MIN_RELEASE_AGE_DAYS=7
+```
+
+Examples:
+
+```bash
+ccd build --npm-min-release-age-days 14
+ccd build --claude-version 2.1.117
+ccd build --npm-min-release-age-days 0
+ccd build --npm-audit-ignore-components pi
+ccd build --npm-audit-force-fix-components pi
+```
+
+During install, CCD generates a temporary manifest for each enabled npm CLI, resolves `package@version-spec` with the age cutoff, installs the locked tree with `npm ci`, and then runs `npm audit signatures`.
+The build also runs `npm audit`, so any reported npm advisory fails the image build.
+You can relax that per component with `--npm-audit-ignore-components`, or attempt a breaking remediation first with `--npm-audit-force-fix-components`.
+`--npm-audit-force-fix-components` is intentionally sharp: `npm audit fix --force` may change the top-level CLI version.
+The resolved version metadata is saved in the image under `/metadata/npm-cli-resolution.txt` and `/metadata/npm-cli-resolution.jsonl`.
+
 ### Run Container (ccd run / ccd .)
 
 ```bash
-ccd run [app_folder] [--home home_folder] [-v|-vv|-vvv]
+ccd run [app_folder] [--home home_folder] [--memory MEM] [--cpus N] [-v|-vv|-vvv]
 ```
 
 - `app_folder`: Local directory mounted to `/app` (default: `.`).
 - `--home`: Local directory for assistant config (default: `$HOME/.claude-code-docker`).
+- `--memory`: Memory limit (default: `1g`; overrides `ccd.toml`).
+- `--cpus`: CPU limit (default: `2`; overrides `ccd.toml`).
 - `-v/-vv/-vvv`: Verbosity levels (warning/info/debug/verbose-debug).
 - Alias: `ccd .` is the same as `ccd run .`.
+
+Resource defaults and extra volume mounts can be set in `ccd.toml` (see [Configuration](#configuration)).
 
 Examples:
 
 ```bash
 ccd run /path/to/app
 ccd .
+ccd run . --memory 8g --cpus 4
 ```
 
 ### Attach to Running Container (ccd attach)
@@ -131,6 +165,7 @@ Other CLI login commands (available only if the client is installed; verify with
 - `gemini auth login`
 - `opencode auth login`
 - `copilot auth login`
+- `pi`
 
 When CLI tools are run, they also inform you if authentication is needed.
 
@@ -205,16 +240,107 @@ Use models with 32K+ context length for best results.
 
 ## Configuration
 
+### ccd.toml
+
+CCD reads configuration from `ccd.toml`. Two locations are checked and merged on every invocation:
+
+| Location | Purpose |
+|----------|---------|
+| `~/.config/ccd/ccd.toml` | **Global** — user-wide defaults (mounts, resource limits) |
+| `./ccd.toml` | **Local** — project-specific overrides (checked in alongside your code) |
+
+**Merge rules:** local file wins for scalar values; mount lists from both files are combined (global mounts applied first).
+
+#### `[build]` section
+
+Controls `ccd build` behaviour.
+
+```toml
+[build]
+# Features to include (mutually exclusive with without_features)
+with_features = ["claude", "codex", "copilot", "rust"]
+# without_features = ["jules", "opencode"]
+
+# npm release-age policy (days a package must be published before it is accepted)
+npm_min_release_age_days = 7
+npm_min_release_age_ignore_components = []
+npm_audit_ignore_components = []
+npm_audit_force_fix_components = []
+
+[versions]
+# Pin individual tool versions (omit to use Dockerfile defaults)
+# claude  = "latest"
+# codex   = "latest"
+# node    = "22"
+# uv      = "0.7.2"
+```
+
+#### `[run]` section
+
+Controls `ccd run` / `ccd .` behaviour.
+
+```toml
+[run]
+# Resource limits (CLI flags --memory / --cpus override these)
+memory = "4g"
+cpus   = "4"
+
+# Extra volume mounts appended to the built-in set.
+# host supports ~ expansion; symlinks are resolved automatically.
+
+[[run.mounts]]
+host      = "~/.ssh"
+container = "/home/ubuntu/.ssh"
+readonly  = true
+optional  = true   # silently skip if path is absent or a broken symlink
+
+[[run.mounts]]
+host      = "/datasets"
+container = "/data"
+# type    = "folder"   # "folder" (default) or "file"
+```
+
+Recommended global config (`~/.config/ccd/ccd.toml`) to mount common host credentials and caches into every container:
+
+```toml
+[run]
+
+[[run.mounts]]
+host      = "~/.gitconfig"
+container = "/home/ubuntu/.gitconfig"
+type      = "file"
+optional  = true
+
+[[run.mounts]]
+host      = "~/.config/git"
+container = "/home/ubuntu/.config/git"
+optional  = true
+
+[[run.mounts]]
+host      = "~/.ssh"
+container = "/home/ubuntu/.ssh"
+readonly  = true
+optional  = true
+
+[[run.mounts]]
+host      = "~/.local/share/uv"
+container = "/home/ubuntu/.local/share/uv"
+optional  = true
+```
+
 ### Volume Mounts
 
-The following host paths are mounted into the container:
+The following host paths are always mounted into the container:
 
-- `{app_folder}` -> `/app` (container working directory)
-- `{home_folder}/.claude` -> `/home/ubuntu/.claude`
-- `{home_folder}/.claude.json` -> `/home/ubuntu/.claude.json`
-- `{home_folder}/.gemini` -> `/home/ubuntu/.gemini`
-- `{home_folder}/.codex` -> `/home/ubuntu/.codex`
-- `{home_folder}/.copilot` -> `/home/ubuntu/.copilot`
+- `{app_folder}` → `/app` (container working directory)
+- `{home_folder}/.claude` → `/home/ubuntu/.claude`
+- `{home_folder}/.claude.json` → `/home/ubuntu/.claude.json`
+- `{home_folder}/.gemini` → `/home/ubuntu/.gemini`
+- `{home_folder}/.codex` → `/home/ubuntu/.codex`
+- `{home_folder}/.copilot` → `/home/ubuntu/.copilot`
+- `{home_folder}/.pi` → `/home/ubuntu/.pi`
+
+Additional mounts can be added via `[[run.mounts]]` in `ccd.toml` (see above).
 
 The `--home` directory is expected to contain the assistant config folders shown above.
 

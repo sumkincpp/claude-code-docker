@@ -14,12 +14,14 @@ RUN apt-get update && apt-get upgrade -y && \
     gnupg \
     lsb-release \
     ripgrep \
+    bubblewrap \
+    vim \
     && rm -rf /var/lib/apt/lists/*
 
-# Create app directory and set permissions
-RUN mkdir -p /app && \
-    chown -R ubuntu:ubuntu /app && \
-    chmod -R 755 /app
+# Create app and metadata directories and set permissions
+RUN mkdir -p /app /metadata && \
+    chown -R ubuntu:ubuntu /app /metadata && \
+    chmod -R 755 /app /metadata
 
 USER ubuntu
 
@@ -33,8 +35,14 @@ ARG NVM_VERSION=0.40.3
 # https://nodejs.org/en/about/previous-releases
 # 22 - Maintenance LTS
 # 24 - Active LTS
-ARG NVM_NODE_VERSION=24
-ARG NPM_VERSION=latest
+ARG NVM_NODE_VERSION=24.15.0
+ENV PATH="/home/ubuntu/.nvm/versions/node/v${NVM_NODE_VERSION}/bin:${PATH}"
+ARG NPM_VERSION=11.13.0
+ARG PNPM_VERSION=10.33.2
+ARG NPM_CLI_MIN_RELEASE_AGE_DAYS=7
+ARG NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS=
+ARG NPM_AUDIT_IGNORE_COMPONENTS=
+ARG NPM_AUDIT_FORCE_FIX_COMPONENTS=
 ARG UV_VERSION=latest
 ARG RUSTUP_VERSION=latest
 
@@ -49,12 +57,12 @@ RUN if [ "$NVM_VERSION" = "latest" ]; then \
     && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v${NVM_VERSION}/install.sh | bash
 
 ARG CLAUDE_VERSION=latest
-# ARG CLAUDE_VERSION=2.0.76
 ARG CODEX_VERSION=latest
 ARG GEMINI_VERSION=latest
 ARG JULES_VERSION=latest
 ARG OPENCODE_VERSION=latest
 ARG COPILOT_VERSION=latest
+ARG PI_VERSION=latest
 
 # Optional build features (set --build-arg WITH_*=0 to disable)
 ARG WITH_RUST=1
@@ -63,30 +71,30 @@ ARG WITH_CODEX=1
 ARG WITH_GEMINI=1
 ARG WITH_COPILOT=1
 ARG WITH_OPENCODE=1
+ARG WITH_PI=1
 
 # Disabled features by default
 ARG WITH_JULES=0
 
+COPY --chown=ubuntu:ubuntu scripts/. /home/ubuntu/.local/bin/.
 
 ENV NVM_DIR="/home/ubuntu/.nvm"
+ENV NPM_CLI_INSTALL_ROOT="/home/ubuntu/.local/share/ccd/npm-installs"
+ENV NPM_CLI_METADATA_ROOT="/metadata"
 # https://github.com/google-gemini/gemini-cli
 # https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started
 # https://github.com/github/copilot-cli?locale=en-US
 RUN . $NVM_DIR/nvm.sh && \
     nvm install ${NVM_NODE_VERSION} && \
-    nvm use ${NVM_NODE_VERSION} && \
     npm install -g npm@${NPM_VERSION} && \
-    if [ "${WITH_CLAUDE}" = "1" ]; then npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION}; fi && \
-    if [ "${WITH_CODEX}" = "1" ]; then npm install -g @openai/codex@${CODEX_VERSION}; fi && \
-    if [ "${WITH_GEMINI}" = "1" ]; then npm install -g @google/gemini-cli@${GEMINI_VERSION}; fi && \
-    if [ "${WITH_JULES}" = "1" ]; then npm install -g @google/jules@${JULES_VERSION}; fi && \
-    if [ "${WITH_OPENCODE}" = "1" ]; then npm install -g opencode-ai@${OPENCODE_VERSION}; fi && \
-    if [ "${WITH_COPILOT}" = "1" ]; then npm install -g @github/copilot@${COPILOT_VERSION}; fi && \
-    echo "Let's symlink the nvm directory to the local bin directory" && \
-    NODE_VERSION=$(nvm current) && \
-    mkdir -p /home/ubuntu/.local/bin && \
-    echo "Symlinking Node.js and npm binaries to /home/ubuntu/.local/bin" && \
-    ln -sf /home/ubuntu/.nvm/versions/node/$NODE_VERSION/bin/* /home/ubuntu/.local/bin/
+    corepack enable && \
+    corepack prepare "pnpm@${PNPM_VERSION}" --activate
+
+RUN PNPM_CLI_MIN_RELEASE_AGE_DAYS="${NPM_CLI_MIN_RELEASE_AGE_DAYS}" \
+    PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS="${NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS}" \
+    PNPM_AUDIT_FORCE_FIX_COMPONENTS="${NPM_AUDIT_FORCE_FIX_COMPONENTS}" \
+    node /home/ubuntu/.local/bin/install-clis.mjs && \
+    ln -sf /home/ubuntu/.nvm/versions/node/v${NVM_NODE_VERSION}/bin/* /home/ubuntu/.local/bin/
 
 # Install Rust toolchain only when requested
 RUN if [ "${WITH_RUST}" = "1" ]; then \
@@ -113,7 +121,8 @@ RUN node -v && \
     if [ "${WITH_JULES}" = "1" ]; then jules --version; fi && \
     if [ "${WITH_CODEX}" = "1" ]; then codex --version; fi && \
     if [ "${WITH_OPENCODE}" = "1" ]; then opencode --version; fi && \
-    if [ "${WITH_COPILOT}" = "1" ]; then copilot --version; fi
+    if [ "${WITH_COPILOT}" = "1" ]; then copilot --version; fi && \
+    if [ "${WITH_PI}" = "1" ]; then pi --version; fi
 
 #####################################################################################
 # Install local-claude wrapper for Ollama integration
