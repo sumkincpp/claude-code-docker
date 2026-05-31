@@ -1,5 +1,9 @@
 # Claude Code Docker
 
+<p align="center">
+  <img src="docs/logo.png" alt="Claude Code Docker logo" width="25%">
+</p>
+
 **CCD** is a Python wrapper to build and run AI coding assistants inside a Docker container.
 
 It builds a Docker image with one or more assistant CLIs and runs them against your local app folder.
@@ -94,7 +98,8 @@ With that an image named `claude-code:latest` is built.
 ### Npm Install Policy
 
 The Docker image resolves npm-distributed CLIs at build time through a release-age policy.
-If a CLI version is left at `latest`, the build installs `package@latest` with npm's `--before <cutoff>` filter, so npm picks the newest allowed top-level version and applies the same cutoff while resolving transitives.
+If a CLI version is left at `latest`, the build installs `package@latest` with npm's `--before <cutoff>` filter,
+so npm picks the newest allowed top-level version and applies the same cutoff while resolving transitives.
 
 Default:
 
@@ -112,11 +117,10 @@ ccd build --npm-audit-ignore-components pi
 ccd build --npm-audit-force-fix-components pi
 ```
 
-During install, CCD generates a temporary manifest for each enabled npm CLI, resolves `package@version-spec` with the age cutoff, installs the locked tree with `npm ci`, and then runs `npm audit signatures`.
-The build also runs `npm audit`, so any reported npm advisory fails the image build.
-You can relax that per component with `--npm-audit-ignore-components`, or attempt a breaking remediation first with `--npm-audit-force-fix-components`.
-`--npm-audit-force-fix-components` is intentionally sharp: `npm audit fix --force` may change the top-level CLI version.
-The resolved version metadata is saved in the image under `/metadata/npm-cli-resolution.txt` and `/metadata/npm-cli-resolution.jsonl`.
+- CCD resolves and installs each npm CLI, then runs signature audit.
+- npm audit failures fail the build.
+- Use ignore or force-fix flags per component `--npm-audit-ignore-components`/`--npm-audit-force-fix-components` to ignore/force fix component
+- Resolution metadata is saved under /metadata/
 
 ### Run Container (ccd run / ccd .)
 
