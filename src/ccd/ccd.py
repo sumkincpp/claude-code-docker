@@ -443,6 +443,11 @@ def run_container(params: RunParameters):
         container_name,
         "--name",
         container_name,
+        # Allow bwrap (bubblewrap) to create user namespaces inside the container.
+        # Docker's default seccomp profile blocks the clone syscall flags required
+        # by bwrap even when kernel.unprivileged_userns_clone=1 is set on the host.
+        "--security-opt",
+        "seccomp=unconfined",
     ]
 
     if params.root:
