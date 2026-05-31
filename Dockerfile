@@ -57,12 +57,12 @@ RUN if [ "$NVM_VERSION" = "latest" ]; then \
     && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v${NVM_VERSION}/install.sh | bash
 
 ARG CLAUDE_VERSION=latest
-# ARG CLAUDE_VERSION=2.0.76
 ARG CODEX_VERSION=latest
 ARG GEMINI_VERSION=latest
 ARG JULES_VERSION=latest
 ARG OPENCODE_VERSION=latest
 ARG COPILOT_VERSION=latest
+ARG PI_VERSION=latest
 
 # Optional build features (set --build-arg WITH_*=0 to disable)
 ARG WITH_RUST=1
@@ -121,7 +121,8 @@ RUN node -v && \
     if [ "${WITH_JULES}" = "1" ]; then jules --version; fi && \
     if [ "${WITH_CODEX}" = "1" ]; then codex --version; fi && \
     if [ "${WITH_OPENCODE}" = "1" ]; then opencode --version; fi && \
-    if [ "${WITH_COPILOT}" = "1" ]; then copilot --version; fi
+    if [ "${WITH_COPILOT}" = "1" ]; then copilot --version; fi && \
+    if [ "${WITH_PI}" = "1" ]; then pi --version; fi
 
 #####################################################################################
 # Install local-claude wrapper for Ollama integration

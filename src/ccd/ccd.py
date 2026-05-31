@@ -20,6 +20,7 @@ FEATURE_BUILD_ARGS = {
     "opencode": "WITH_OPENCODE",
     "copilot": "WITH_COPILOT",
     "jules": "WITH_JULES",
+    "pi": "WITH_PI",
 }
 VERSION_BUILD_ARGS = {
     "nvm": "NVM_VERSION",
@@ -33,6 +34,7 @@ VERSION_BUILD_ARGS = {
     "opencode": "OPENCODE_VERSION",
     "copilot": "COPILOT_VERSION",
     "jules": "JULES_VERSION",
+    "pi": "PI_VERSION",
 }
 
 # Configure logging
