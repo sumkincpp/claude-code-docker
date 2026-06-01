@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import logging
+import os
 import shlex
 import subprocess
 import sys
@@ -176,6 +177,8 @@ class BuildConfig:
     def to_docker_build_args(self, extra_args: list[str]) -> list[str]:
         """Produce the full list of docker-build flag tokens."""
         result: list[str] = [*extra_args]
+        result.extend(["--build-arg", f"USER_UID={os.getuid()}"])
+        result.extend(["--build-arg", f"USER_GID={os.getgid()}"])
 
         if self.force:
             logger.debug("Force flag set, disabling Docker layer caching")
@@ -541,6 +544,8 @@ def run_container(params: RunParameters):
 
     if params.root:
         cmd.extend(["--user", "root"])
+    else:
+        cmd.extend(["--user", "ubuntu"])
 
     cmd.extend([*volume_cmds, params.image_name])
 

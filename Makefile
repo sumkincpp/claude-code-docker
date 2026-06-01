@@ -4,6 +4,8 @@ IMAGE_NAME ?= ccd
 IMAGE_TAG ?= latest
 IMAGE_FULL ?= $(IMAGE_NAME):$(IMAGE_TAG)
 GRYPE_VERSION ?= latest
+USER_UID ?= $(shell id -u)
+USER_GID ?= $(shell id -g)
 
 help:
 	@echo "Available targets:"
@@ -14,7 +16,10 @@ help:
 .PHONY: build docker-build docker-scan
 build: docker-build
 docker-build:
-	docker build -t $(IMAGE_FULL) .
+	docker build \
+		--build-arg USER_UID=$(USER_UID) \
+		--build-arg USER_GID=$(USER_GID) \
+		-t $(IMAGE_FULL) .
 
 GRYPE_VERSION ?= v0.110.0
 GRYPE_IMAGE ?= anchore/grype:$(GRYPE_VERSION)

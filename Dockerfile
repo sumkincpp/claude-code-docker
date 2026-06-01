@@ -1,5 +1,8 @@
 FROM ubuntu:24.04
 
+ARG USER_UID=1000
+ARG USER_GID=1000
+
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y \
@@ -17,6 +20,19 @@ RUN apt-get update && apt-get upgrade -y && \
     bubblewrap \
     vim \
     && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    if getent group ubuntu >/dev/null; then \
+        groupmod --non-unique --gid "${USER_GID}" ubuntu; \
+    else \
+        groupadd --non-unique --gid "${USER_GID}" ubuntu; \
+    fi; \
+    if id ubuntu >/dev/null 2>&1; then \
+        usermod --non-unique --uid "${USER_UID}" --gid "${USER_GID}" --home /home/ubuntu --shell /bin/bash ubuntu; \
+    else \
+        useradd --non-unique --uid "${USER_UID}" --gid "${USER_GID}" --home-dir /home/ubuntu --create-home --shell /bin/bash ubuntu; \
+    fi; \
+    chown -R ubuntu:ubuntu /home/ubuntu
 
 # Create app and metadata directories and set permissions
 RUN mkdir -p /app /metadata && \
