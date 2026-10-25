@@ -47,13 +47,20 @@ class FakeRunner(RecordingBackend):
     name = "fake-run"
 
 
+class FakeDockerLike(RecordingBackend):
+    name = "fake-docker"
+
+    def image_formats(self):
+        return {"docker-daemon"}
+
+
 @pytest.fixture
 def ccd(tmp_path, monkeypatch):
     """Returns `invoke(*args, toml="")`: runs the CLI in an empty project dir and returns (exit_code, recorded calls)."""
     CALLS.clear()
     RecordingBackend.running = []
     monkeypatch.chdir(tmp_path)
-    for name, cls in (("fake", RecordingBackend), ("fake-build", FakeBuilder), ("fake-run", FakeRunner)):
+    for name, cls in (("fake", RecordingBackend), ("fake-build", FakeBuilder), ("fake-run", FakeRunner), ("fake-docker", FakeDockerLike)):
         monkeypatch.setitem(plugin.BUILTIN_BACKENDS, name, f"{__name__}:{cls.__name__}")
     # Keep the developer's real ~/.config/ccd/ccd.toml out of the tests
     original = RunConfig.load_effective.__func__

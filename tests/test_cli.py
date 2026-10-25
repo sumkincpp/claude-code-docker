@@ -159,3 +159,62 @@ def test_vm_addresses_avoid_networks_the_host_already_uses():
 
     # the pihole's 10.111.111.0/29 covers blocks 0 and 1; our own tap's route is ignored, so block 2 is the first free one
     assert net.addresses(index) == ("10.111.111.9", "10.111.111.10")
+
+
+def _firecracker_cache(tmp_path, monkeypatch, stamp=True, kernel=True):
+    """A cache dir as `ccd build` leaves it, with host-side checks stubbed out (no KVM, NFS server or root)."""
+    from ccd.backends import firecracker as fc
+
+    cache = tmp_path / "fc"
+    cache.mkdir()
+    (cache / "rootfs.squashfs").write_bytes(b"")
+    if stamp:
+        (cache / "rootfs.image-id").write_text(f"sha256:abc:{fc.assets_hash()}")
+    if kernel:
+        (cache / "vmlinux").write_bytes(b"")
+    monkeypatch.setattr(fc.FirecrackerBackend, "check_available", lambda self: None)
+    monkeypatch.setattr(fc.hostnet, "check_nfs_server", lambda: None)
+    return cache, f'[firecracker]\ncache_dir = "{cache}"\nuplink = "eth0"\n'
+
+
+def test_firecracker_run_refuses_a_rootfs_without_build_stamp(ccd, tmp_path, monkeypatch, capsys):
+    cache, toml = _firecracker_cache(tmp_path, monkeypatch, stamp=False)
+    (tmp_path / "app").mkdir()
+
+    code, _ = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", toml=toml)
+
+    assert code == 1 and "run 'ccd build'" in capsys.readouterr().out
+
+
+def test_firecracker_run_fails_without_dns_and_leaves_no_vm_state(ccd, tmp_path, monkeypatch, capsys):
+    from ccd.backends.firecracker import net
+
+    cache, toml = _firecracker_cache(tmp_path, monkeypatch)
+    resolv = tmp_path / "resolv.conf"
+    resolv.write_text("nameserver 127.0.0.53\nnameserver fe80::1%wlan0\n")  # only addresses the VM cannot use
+    monkeypatch.setattr(net, "RESOLV_CONF", resolv)
+    (tmp_path / "app").mkdir()
+
+    code, _ = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", toml=toml)
+
+    assert code == 1 and "No usable IPv4 DNS server" in capsys.readouterr().out
+    assert not (cache / "vms").exists()
+
+
+def test_firecracker_build_without_a_kernel_fails(ccd, tmp_path, monkeypatch, capsys):
+    from ccd.backends import firecracker as fc
+
+    _, toml = _firecracker_cache(tmp_path, monkeypatch, kernel=False)
+    monkeypatch.setattr(fc.FirecrackerBackend, "_rootfs_via_docker", staticmethod(lambda *args: None))
+
+    code, calls = ccd("build", toml='[build]\nbackend = "fake-docker"\n\n[run]\nbackend = "firecracker"\n' + toml)
+
+    assert code == 1 and "No guest kernel" in capsys.readouterr().out
+
+
+def test_firecracker_only_imports_from_a_docker_daemon(ccd, tmp_path, monkeypatch, capsys):
+    _, toml = _firecracker_cache(tmp_path, monkeypatch)
+
+    code, _ = ccd("build", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "firecracker"\n' + toml)
+
+    assert code == 1 and "local Docker daemon" in capsys.readouterr().out

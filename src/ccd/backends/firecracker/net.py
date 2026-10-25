@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Docker hands out user-defined networks from 172.17.0.0/16 up to 172.31.0.0/16, so ccd stays out of that pool.
 # Whatever the range, /30 blocks that overlap a route or address the host already has are skipped (see first_free_index).
 NET_BASE = ipaddress.ip_network("10.111.111.0/24")
-FALLBACK_DNS = ["1.1.1.1", "8.8.8.8"]
+RESOLV_CONF = Path("/etc/resolv.conf")
 
 
 @dataclass
@@ -124,10 +124,10 @@ def default_iface() -> str:
 
 
 def host_dns() -> list[str]:
-    """Host resolvers, skipping loopback stubs (127.0.0.53) that the guest cannot reach."""
+    """Host resolvers, skipping loopback stubs (127.0.0.53) that the guest cannot reach; an error when none is left."""
     servers: list[str] = []
     try:
-        for line in Path("/etc/resolv.conf").read_text().splitlines():
+        for line in RESOLV_CONF.read_text().splitlines():
             parts = line.split()
             if len(parts) == 2 and parts[0] == "nameserver" and not parts[1].startswith("127."):
                 try:
@@ -137,7 +137,9 @@ def host_dns() -> list[str]:
                     continue  # e.g. fe80::1%wlan0
     except OSError:
         pass
-    return servers or FALLBACK_DNS
+    if not servers:
+        raise BackendError(f"No usable IPv4 DNS server in {RESOLV_CONF} (loopback resolvers are unreachable from the VM); set dns = [...] in the [firecracker] table of ccd.toml")
+    return servers
 
 
 def nft_ruleset(net: VmNet) -> str:

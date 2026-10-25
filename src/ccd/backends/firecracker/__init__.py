@@ -84,7 +84,7 @@ class FirecrackerBackend(Backend):
         cache = cache_dir(request.options)
         cache.mkdir(parents=True, exist_ok=True)  # created as the invoking user, not root
 
-        if "docker-daemon" not in source.formats or not shutil.which("docker"):
+        if "docker-daemon" not in source.formats:
             raise BackendError("The firecracker backend can only import images from a local Docker daemon")
         self._rootfs_via_docker(source.name, cache, request)
         self._ensure_kernel(cache, request.options.get("kernel_url"))
@@ -138,7 +138,7 @@ class FirecrackerBackend(Backend):
                 urllib.request.urlretrieve(kernel_url, kernel)
             stamp.write_text(kernel_url)
         elif not kernel.exists():
-            logger.warning("No guest kernel at %s; set kernel_url in the [firecracker] table of ccd.toml or place a vmlinux there", kernel)
+            raise BackendError(f"No guest kernel at {kernel}; set kernel_url in the [firecracker] table of ccd.toml or place a vmlinux there")
 
     def run(self, request: RunRequest) -> None:
         options = request.options
@@ -147,9 +147,9 @@ class FirecrackerBackend(Backend):
         if not rootfs.exists():
             raise BackendError(f"No rootfs in {cache}; run 'ccd build' first")
         stamp = cache / "rootfs.image-id"
-        if stamp.exists() and not stamp.read_text().endswith(f":{assets_hash()}"):
+        if not stamp.exists() or not stamp.read_text().endswith(f":{assets_hash()}"):
             # Booting it would not fail clearly: an older init ignores newer boot arguments and simply behaves differently
-            raise BackendError("The VM rootfs was built from older ccd VM files (init/agent changed); run 'ccd build' first")
+            raise BackendError("The VM rootfs is missing its build stamp or was built from older ccd VM files (init/agent changed); run 'ccd build' first")
         kernel = cache / "vmlinux"
         if not kernel.exists():
             raise BackendError(f"{kernel} not found; run 'ccd build' first")
@@ -157,6 +157,9 @@ class FirecrackerBackend(Backend):
         hostnet.check_nfs_server()
         mem_mib = microvm.parse_memory_mib(request.memory)
         cpus = int(float(options.get("vcpus", request.cpus)))
+        # Resolved before the VM's state directory exists, so a failure here leaves nothing behind
+        iface = options.get("uplink") or hostnet.default_iface()
+        dns = list(options.get("dns") or hostnet.host_dns())
 
         registry = microvm.VmRegistry(cache)
         subnet = vm_subnet(options)
@@ -172,8 +175,8 @@ class FirecrackerBackend(Backend):
             guest_ip=guest_ip,
             uid=os.getuid(),
             gid=os.getgid(),
-            iface=options.get("uplink") or hostnet.default_iface(),
-            dns=list(options.get("dns") or hostnet.host_dns()),
+            iface=iface,
+            dns=dns,
         )
         spec = microvm.BootSpec(
             name=request.name,
