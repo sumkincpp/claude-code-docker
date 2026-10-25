@@ -85,6 +85,7 @@ ENV NPM_CLI_METADATA_ROOT="/metadata"
 # https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started
 # https://github.com/github/copilot-cli?locale=en-US
 RUN . $NVM_DIR/nvm.sh && \
+    NVM_NODEJS_ORG_MIRROR=https://unofficial-builds.nodejs.org/download/release \
     nvm install ${NVM_NODE_VERSION} && \
     NPM_RESOLVED=$(node /home/user/.local/bin/resolve-version.mjs npm ${NPM_VERSION} ${NPM_CLI_MIN_RELEASE_AGE_DAYS}) && \
     npm install -g npm@${NPM_RESOLVED} && \
