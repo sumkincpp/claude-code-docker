@@ -43,22 +43,22 @@ with_features = ["codex", "claude", "pi", "copilot", "rust"]
 
 [[run.mounts]]
 host      = "~/.local/share/uv"
-container = "/home/ubuntu/.local/share/uv"
+container = "/home/user/.local/share/uv"
 optional  = true
 
 #[[run.mounts]]
 #host      = "~/.gitconfig"
-#container = "/home/ubuntu/.gitconfig"
+#container = "/home/user/.gitconfig"
 #type      = "file"
 #optional  = true
 
 #[[run.mounts]]
 #host      = "~/.config/git"
-#container = "/home/ubuntu/.config/git"
+#container = "/home/user/.config/git"
 #optional  = true
 
 # [[run.mounts]]
 # host      = "~/.ssh"
-# container = "/home/ubuntu/.ssh"
+# container = "/home/user/.ssh"
 # readonly  = true
 # optional  = true
