@@ -1,6 +1,6 @@
 [build]
-# Backend that builds the image (default: the [run] backend). Building with docker and
-# running on firecracker hands the image over automatically.
+# Backend that builds the image: docker or buildah (default: the [run] backend). Building with another backend than the one that runs
+# the image hands it over automatically, e.g. docker or buildah -> firecracker.
 backend = "docker"
 
 # Minimum release age in days for npm packages resolved by tag (e.g. latest)

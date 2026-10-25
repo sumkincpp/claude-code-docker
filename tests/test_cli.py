@@ -258,6 +258,40 @@ def test_builder_releases_the_image_even_when_the_import_fails(ccd, monkeypatch)
     assert code == 1 and calls[-1][:2] == ("fake-build", "release")
 
 
+def test_buildah_builds_and_firecracker_packs_from_containers_storage(ccd, tmp_path, monkeypatch):
+    import subprocess
+
+    from ccd.backends import firecracker as fc
+
+    cache, toml = _firecracker_cache(tmp_path, monkeypatch)
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd[:2] == ["buildah", "run"]:
+            (cache / fc.TMP_ROOTFS).write_bytes(b"squashfs")  # what mksquashfs would have written
+        return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    code, _ = ccd("build", toml='[build]\nbackend = "buildah"\n\n[run]\nbackend = "firecracker"\n' + toml)
+
+    assert code == 0
+    assert not any(cmd[0] == "docker" for cmd in commands)
+    bud, images, vm_layer, from_, run, rm = commands
+    assert bud[:6] == ["buildah", "bud", "--layers", "-t", "localhost/ccd", "-f"] and bud[-1] == "."
+    assert images[-1] == "localhost/ccd"
+    assert vm_layer[:5] == ["buildah", "bud", "--layers", "-t", "localhost/ccd-vm"] and "BASE_IMAGE=localhost/ccd" in vm_layer
+    assert from_ == ["buildah", "from", "localhost/ccd-vm"]
+    assert run[:2] == ["buildah", "run"] and f"{cache}:/out" in run and "--mount" not in run  # --mount type=bind is read-only by default
+    script = run[-1]
+    assert "mksquashfs" in script and "chown" not in script  # rootless: the output is already the user's
+    assert rm == ["buildah", "rm", "abc123"]
+    assert (cache / "rootfs.squashfs").read_bytes() == b"squashfs"
+    assert (cache / "rootfs.image-id").read_text().startswith("abc123:")
+
+
 def test_docker_image_is_packed_by_docker_and_owned_by_the_invoking_user(ccd, tmp_path, monkeypatch):
     import os
     import subprocess

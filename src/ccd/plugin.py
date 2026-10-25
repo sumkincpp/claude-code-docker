@@ -146,6 +146,7 @@ class _BuiltinBackend:
 
 BUILTIN_BACKENDS = {
     "docker": "ccd.backends.docker:DockerBackend",
+    "buildah": "ccd.backends.buildah:BuildahBackend",
     "firecracker": "ccd.backends.firecracker:FirecrackerBackend",
 }
 

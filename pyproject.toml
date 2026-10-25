@@ -13,6 +13,7 @@ ccd = "ccd.ccd:main"
 
 [project.entry-points."ccd.backends"]
 docker = "ccd.backends.docker:DockerBackend"
+buildah = "ccd.backends.buildah:BuildahBackend"
 firecracker = "ccd.backends.firecracker:FirecrackerBackend"
 
 

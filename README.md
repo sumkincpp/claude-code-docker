@@ -62,7 +62,7 @@ At runtime each binary in `~/.local/bin/` is a small wrapper script pointing int
 
 ## Requirements
 
-- Docker
+- Docker (or [buildah](docs/buildah.md) as the build backend)
 - Python 3.12+
 - uv (required for Quickstart and development)
 - Host OS: Linux or macOS (Windows via WSL2).
