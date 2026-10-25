@@ -92,3 +92,16 @@ def test_backends_command_lists_shipped_plugins(ccd, capsys):
     ccd("backends")
 
     assert {"docker", "firecracker"} <= set(capsys.readouterr().out.split())
+
+
+def test_vm_addresses_avoid_networks_the_host_already_uses():
+    from ccd.backends.firecracker import net
+
+    routes = "default via 192.168.88.1 dev eth0\n10.111.111.0/29 dev br-pihole proto kernel\n10.111.111.4/30 dev ccdtap0 proto kernel\n"
+    addrs = "2: eth0    inet 192.168.88.10/24 brd 192.168.88.255 scope global eth0\n"
+    taken = net.parse_host_networks(routes, addrs)
+
+    index = net.first_free_index(set(), taken)
+
+    # the pihole's 10.111.111.0/29 covers blocks 0 and 1; our own tap's route is ignored, so block 2 is the first free one
+    assert net.addresses(index) == ("10.111.111.9", "10.111.111.10")

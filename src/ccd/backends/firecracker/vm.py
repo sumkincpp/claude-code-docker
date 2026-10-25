@@ -152,7 +152,14 @@ class VmRegistry:
     def create(self, name: str, index: int, guest_ip: str) -> Path:
         directory = self.root / name
         if directory.exists():
-            shutil.rmtree(directory, ignore_errors=True)  # stale dir of a dead VM with the same name
+            # Stale dir of a dead VM with the same name (e.g. its teardown was interrupted): single-file bind mounts may
+            # still be mounted inside it and would make rmtree fail
+            for staged in (directory / "files").glob("*"):
+                if os.path.ismount(staged):
+                    subprocess.run(["sudo", "umount", "-l", str(staged)], check=False)
+            shutil.rmtree(directory, ignore_errors=True)
+            if directory.exists():
+                raise BackendError(f"Leftover state of a dead VM could not be removed: {directory}")
         directory.mkdir(parents=True)
         (directory / "info.json").write_text(json.dumps({"name": name, "index": index, "pid": os.getpid(), "guest_ip": guest_ip}))
         return directory

@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -39,6 +40,14 @@ def host_arch() -> str:
     """Architecture name as used in Firecracker release and kernel URLs (x86_64 or aarch64)."""
     machine = platform.machine()
     return "aarch64" if machine == "arm64" else machine
+
+
+def vm_subnet(options: dict) -> ipaddress.IPv4Network:
+    """Range the per-VM /30 blocks are taken from ([firecracker] subnet, default hostnet.NET_BASE)."""
+    try:
+        return ipaddress.ip_network(options.get("subnet", hostnet.NET_BASE), strict=False)
+    except ValueError as e:
+        raise BackendError(f"Invalid [firecracker] subnet: {e}") from e
 
 
 def cache_dir(options: dict) -> Path:
@@ -149,8 +158,9 @@ class FirecrackerBackend(Backend):
         cpus = int(float(options.get("vcpus", request.cpus)))
 
         registry = microvm.VmRegistry(cache)
-        index = hostnet.first_free_index(registry.used_indexes())
-        host_ip, guest_ip = hostnet.addresses(index)
+        subnet = vm_subnet(options)
+        index = hostnet.first_free_index(registry.used_indexes(), hostnet.host_networks(), subnet)
+        host_ip, guest_ip = hostnet.addresses(index, subnet)
         directory = registry.create(request.name, index, guest_ip)
 
         net = hostnet.VmNet(

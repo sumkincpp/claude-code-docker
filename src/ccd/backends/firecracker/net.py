@@ -8,6 +8,7 @@ import ipaddress
 import logging
 import re
 import shlex
+import signal
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,7 +18,10 @@ from ccd.plugin import BackendError
 logger = logging.getLogger(__name__)
 
 # Each VM gets a /30 out of this block: .1 = host (tap), .2 = guest
-NET_BASE = ipaddress.ip_network("172.30.0.0/16")
+# Docker hands out user-defined networks from 172.17.0.0/16 up to 172.31.0.0/16, so ccd stays out of that pool.
+# Whatever the range, /30 blocks that overlap a route or address the host already has are skipped (see first_free_index).
+NET_BASE = ipaddress.ip_network("10.111.111.0/24")
+LEGACY_NET_BASE = ipaddress.ip_network("172.30.0.0/16")  # earlier default; only prune still recognises it
 FALLBACK_DNS = ["1.1.1.1", "8.8.8.8"]
 
 
@@ -60,19 +64,51 @@ class VmNet:
         return "ccd_" + re.sub(r"[^A-Za-z0-9]", "_", self.name)
 
 
-def addresses(index: int) -> tuple[str, str]:
-    """(host_ip, guest_ip) of the index-th /30."""
-    base = int(NET_BASE.network_address) + 4 * index
-    if base + 3 > int(NET_BASE.broadcast_address):
+def addresses(index: int, base_net: ipaddress.IPv4Network = NET_BASE) -> tuple[str, str]:
+    """(host_ip, guest_ip) of the index-th /30 of `base_net`."""
+    base = int(base_net.network_address) + 4 * index
+    if base + 3 > int(base_net.broadcast_address):
         raise BackendError("Too many Firecracker VMs running (address block exhausted)")
     return str(ipaddress.ip_address(base + 1)), str(ipaddress.ip_address(base + 2))
 
 
-def first_free_index(used: set[int]) -> int:
+def parse_host_networks(routes: str, addrs: str) -> list[ipaddress.IPv4Network]:
+    """Networks the host already uses: `ip -4 -o route show` and `ip -4 -o addr show` output. Our own taps are ignored."""
+    nets: list[ipaddress.IPv4Network] = []
+    for line in routes.splitlines():
+        tokens = line.split()
+        if not tokens or tokens[0] == "default" or re.search(r"\bdev ccdtap\d+\b", line):
+            continue
+        try:
+            nets.append(ipaddress.ip_network(tokens[0], strict=False))
+        except ValueError:
+            continue
+    for line in addrs.splitlines():
+        match = re.search(r"\binet (\S+)", line)
+        if match and not re.search(r"^\d+:\s+ccdtap\d+", line):
+            nets.append(ipaddress.ip_network(match.group(1), strict=False))
+    return nets
+
+
+def host_networks() -> list[ipaddress.IPv4Network]:
+    def ip(*args: str) -> str:
+        return subprocess.run(["ip", "-4", "-o", *args], capture_output=True, text=True, check=False).stdout
+
+    return parse_host_networks(ip("route", "show"), ip("addr", "show"))
+
+
+def first_free_index(used: set[int], taken: list[ipaddress.IPv4Network] = (), base_net: ipaddress.IPv4Network = NET_BASE) -> int:
+    """Lowest index that no live VM uses and whose /30 does not overlap anything in `taken`."""
     index = 0
-    while index in used:
+    while True:
+        if index not in used:
+            start = int(base_net.network_address) + 4 * index
+            block = ipaddress.ip_network((start, 30))
+            if start + 3 > int(base_net.broadcast_address):
+                raise BackendError(f"No free address block left in {base_net} (the rest overlaps the host's own networks)")
+            if not any(block.overlaps(net) for net in taken):
+                return index
         index += 1
-    return index
 
 
 def default_iface() -> str:
@@ -194,7 +230,12 @@ def setup(net: VmNet) -> None:
 
 
 def teardown(net: VmNet) -> None:
+    # An impatient Ctrl-C here would kill the script halfway and leave exports, bind mounts and the tap behind; the child
+    # inherits the ignored SIGINT
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         _sudo(teardown_script(net))
     except subprocess.CalledProcessError:
         logger.warning("Host network teardown reported errors for %s", net.name)
+    finally:
+        signal.signal(signal.SIGINT, previous)
