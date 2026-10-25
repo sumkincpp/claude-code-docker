@@ -8,6 +8,7 @@ RUN apk add --no-cache \
     python3-dev \
     py3-pip \
     build-base \
+    linux-headers \
     ca-certificates \
     gnupg \
     ripgrep \
