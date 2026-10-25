@@ -249,10 +249,14 @@ def add_container_args(parser: argparse.ArgumentParser, home_folder: Path) -> ar
     parser.add_argument("--home", default=home_folder, help=f"Home folder path (default: ${home_folder})")
     parser.add_argument("--memory", default="1g", help="Memory limit for the container (default: 1g)")
     parser.add_argument("--cpus", default="2", help="Number of CPUs for the container (default: 2)")
-    parser.add_argument("--root", action="store_true", help="Run as root")
+    parser.add_argument("--root", action="store_true", help="Run as root (same as --user root)")
+    add_user_arg(parser)
     add_backend_arg(parser)
     return parser
 
+
+def add_user_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("-u", "--user", dest="run_user", choices=["root", "user"], default=None, help="User to log in as (default: user)")
 
 
 def load_backend(name: str, run_config: RunConfig) -> tuple[Backend, dict]:
@@ -366,12 +370,15 @@ def main() -> None:
     add_container_args(run_parser, home_folder)
 
     attach_parser = command_parser.add_parser("attach", help="Attach to a running container")
-    attach_parser.add_argument("--root", action="store_true", help="Attach as root")
+    attach_parser.add_argument("--root", action="store_true", help="Attach as root (same as --user root)")
+    add_user_arg(attach_parser)
     add_backend_arg(attach_parser)
 
     command_parser.add_parser("backends", help="List installed backend plugins")
 
     args, unknown = parser.parse_known_args()
+    if getattr(args, "run_user", None) is not None:
+        args.root = args.run_user == "root"  # -u wins over --root when both are given
 
     # Setup logging based on verbosity
     setup_logging(args.verbose)
