@@ -1,44 +1,43 @@
-FROM ubuntu:24.04
+FROM alpine:3.24
 
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get upgrade -y && \
-    apt-get install -y \
+RUN apk add --no-cache \
     curl \
     git \
     bash \
     python3 \
     python3-dev \
-    python3-pip \
-    build-essential \
+    py3-pip \
+    build-base \
     ca-certificates \
     gnupg \
-    lsb-release \
     ripgrep \
     bubblewrap \
-    vim \
-    && rm -rf /var/lib/apt/lists/*
+    vim
 
 # Create app and metadata directories and set permissions
 RUN mkdir -p /app /metadata && \
-    chown -R ubuntu:ubuntu /app /metadata && \
+    addgroup -g 1000 user && \
+    adduser -D -u 1000 -G user -s /bin/bash user && \
+    chown -R user:user /app /metadata && \
     chmod -R 755 /app /metadata
 
-USER ubuntu
+USER user
 
-ENV PATH="/home/ubuntu/.local/bin:/home/ubuntu/.cargo/bin:$PATH"
+ENV PATH="/home/user/.local/bin:/home/user/.cargo/bin:$PATH"
 ENV UV_PROJECT_ENVIRONMENT="/app/.venv2"
 
 # Component versions (set --build-arg <COMPONENT>_VERSION=X.Y.Z to specify version)
 # https://github.com/nvm-sh/nvm/releases
-ARG NVM_VERSION=0.40.3
-# ARG NVM_VERSION=latest
+ARG NVM_VERSION=latest
 # https://nodejs.org/en/about/previous-releases
 # 22 - Maintenance LTS
 # 24 - Active LTS
 ARG NVM_NODE_VERSION=24.15.0
-ENV PATH="/home/ubuntu/.nvm/versions/node/v${NVM_NODE_VERSION}/bin:${PATH}"
-ARG NPM_VERSION=11.13.0
-ARG PNPM_VERSION=10.33.2
+ENV PATH="/home/user/.nvm/versions/node/v${NVM_NODE_VERSION}/bin:${PATH}"
+# https://www.npmjs.com/package/npm?activeTab=versions
+ARG NPM_VERSION=latest
+# https://github.com/pnpm/pnpm/releases
+ARG PNPM_VERSION=latest
 ARG NPM_CLI_MIN_RELEASE_AGE_DAYS=7
 ARG NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS=
 ARG NPM_AUDIT_IGNORE_COMPONENTS=
@@ -76,26 +75,28 @@ ARG WITH_PI=1
 # Disabled features by default
 ARG WITH_JULES=0
 
-COPY --chown=ubuntu:ubuntu scripts/. /home/ubuntu/.local/bin/.
+COPY --chown=user:user scripts/. /home/user/.local/bin/.
 
-ENV NVM_DIR="/home/ubuntu/.nvm"
-ENV NPM_CLI_INSTALL_ROOT="/home/ubuntu/.local/share/ccd/npm-installs"
+ENV NVM_DIR="/home/user/.nvm"
+ENV NPM_CLI_INSTALL_ROOT="/home/user/.local/share/ccd/npm-installs"
 ENV NPM_CLI_METADATA_ROOT="/metadata"
 # https://github.com/google-gemini/gemini-cli
 # https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started
 # https://github.com/github/copilot-cli?locale=en-US
 RUN . $NVM_DIR/nvm.sh && \
     nvm install ${NVM_NODE_VERSION} && \
-    npm install -g npm@${NPM_VERSION} && \
+    NPM_RESOLVED=$(node /home/user/.local/bin/resolve-version.mjs npm ${NPM_VERSION} ${NPM_CLI_MIN_RELEASE_AGE_DAYS}) && \
+    npm install -g npm@${NPM_RESOLVED} && \
+    PNPM_RESOLVED=$(node /home/user/.local/bin/resolve-version.mjs pnpm ${PNPM_VERSION} ${NPM_CLI_MIN_RELEASE_AGE_DAYS}) && \
     corepack enable && \
-    corepack prepare "pnpm@${PNPM_VERSION}" --activate
+    corepack prepare "pnpm@${PNPM_RESOLVED}" --activate
 
 RUN PNPM_CLI_MIN_RELEASE_AGE_DAYS="${NPM_CLI_MIN_RELEASE_AGE_DAYS}" \
     PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS="${NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS}" \
     PNPM_AUDIT_FORCE_FIX_COMPONENTS="${NPM_AUDIT_FORCE_FIX_COMPONENTS}" \
     NODE_USE_ENV_PROXY=1 \
-    node /home/ubuntu/.local/bin/install-clis.mjs && \
-    ln -sf /home/ubuntu/.nvm/versions/node/v${NVM_NODE_VERSION}/bin/* /home/ubuntu/.local/bin/
+    node /home/user/.local/bin/install-clis.mjs && \
+    ln -sf /home/user/.nvm/versions/node/v${NVM_NODE_VERSION}/bin/* /home/user/.local/bin/
 
 # Install Rust toolchain only when requested
 RUN if [ "${WITH_RUST}" = "1" ]; then \
@@ -128,8 +129,8 @@ RUN node -v && \
 #####################################################################################
 # Install local-claude wrapper for Ollama integration
 #####################################################################################
-COPY --chown=ubuntu:ubuntu local-claude/local-claude /home/ubuntu/.local/bin/local-claude
-RUN chmod +x /home/ubuntu/.local/bin/local-claude
+COPY --chown=user:user local-claude/local-claude /home/user/.local/bin/local-claude
+RUN chmod +x /home/user/.local/bin/local-claude
 
 WORKDIR /app
 
@@ -159,7 +160,7 @@ fi
 exec "$@"
 EOF
 RUN chmod +x /usr/local/bin/ccd-entrypoint
-USER ubuntu
+USER user
 
 # claude code
 ENV DISABLE_AUTOUPDATER=1

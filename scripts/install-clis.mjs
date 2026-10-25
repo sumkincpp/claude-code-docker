@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { execSync } from "child_process";
 
-const INSTALL_ROOT = process.env.PNPM_CLI_INSTALL_ROOT ?? "/home/ubuntu/.local/share/ccd/pnpm-installs";
+const INSTALL_ROOT = process.env.PNPM_CLI_INSTALL_ROOT ?? path.join(os.homedir(), ".local/share/ccd/pnpm-installs");
 const METADATA_ROOT = process.env.PNPM_CLI_METADATA_ROOT ?? "/metadata";
 const SUMMARY_FILE = path.join(METADATA_ROOT, "pnpm-cli-resolution.txt");
 const JSONL_FILE = path.join(METADATA_ROOT, "pnpm-cli-resolution.jsonl");
@@ -13,7 +14,7 @@ const PNPM_VERSION = execSync("pnpm --version", { encoding: "utf8" }).trim();
 const AUDIT_IGNORE_CVES = (process.env.PNPM_AUDIT_IGNORE_CVES ?? "").split(",").map(s => s.trim()).filter(Boolean);
 const AUDIT_FORCE_FIX_COMPONENTS = (process.env.PNPM_AUDIT_FORCE_FIX_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
 const MIN_RELEASE_AGE_IGNORE_COMPONENTS = (process.env.PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
-const BIN_DIR = "/home/ubuntu/.local/bin";
+const BIN_DIR = path.join(os.homedir(), ".local/bin");
 const NOW = Date.now();
 
 const COMPONENTS = [
