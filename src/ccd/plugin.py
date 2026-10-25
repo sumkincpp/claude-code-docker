@@ -7,11 +7,13 @@ can add runtimes without touching the core.
 
 import argparse
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -71,10 +73,88 @@ class AttachRequest:
     options: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class ImageInfo:
+    """One row of `ccd images`: a piece of build data a backend holds (an image, a rootfs, a kernel).
+
+    Backends fill in plain values (bytes, a datetime); `ccd images` formats them the same way for every backend.
+    """
+
+    backend: str
+    kind: str
+    name: str
+    id: str = ""
+    size: int | None = None  # bytes
+    created: datetime | None = None
+
+
+def human_size(size: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1000 or unit == "GB":
+            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1000
+    return ""
+
+
+AGO_LIMIT = timedelta(days=7)  # older than this, `ccd images` shows the date instead of "N days ago"
+
+
+def utcnow() -> datetime:
+    """The current time; the one place ages read the clock, so tests can replace it."""
+    return datetime.now(timezone.utc)
+
+
+def _aware(moment: datetime) -> datetime:
+    """A time without a zone is local time; ages are computed on zone-aware times so DST changes cannot shift them."""
+    return moment if moment.tzinfo else moment.astimezone()
+
+
+def format_age(created: datetime, now: datetime | None = None) -> str:
+    """'just now', '5 minutes ago', '3 hours ago', '2 days ago' up to AGO_LIMIT, then the local date ('2026-10-18')."""
+    created = _aware(created)
+    age = _aware(now or utcnow()) - created
+    if age >= AGO_LIMIT:
+        return created.astimezone().strftime("%Y-%m-%d")
+    seconds = max(int(age.total_seconds()), 0)
+    for unit, length in (("day", 86400), ("hour", 3600), ("minute", 60)):
+        if seconds >= length:
+            count = seconds // length
+            return f"{count} {unit}{'' if count == 1 else 's'} ago"
+    return "just now"
+
+
+def short_id(image_id: str) -> str:
+    return image_id.removeprefix("sha256:")[:12]
+
+
+def parse_size(text: str) -> int | None:
+    """'3.82 GB' / '800MB' (decimal units, as docker and buildah print them) to bytes."""
+    match = re.fullmatch(r"\s*([\d.]+)\s*([kKMGT]?)B?\s*", text)
+    if not match:
+        return None
+    return int(float(match.group(1)) * 1000 ** ("", "k", "M", "G", "T").index(match.group(2).replace("K", "k")))
+
+
+def parse_time(text: str) -> datetime | None:
+    """RFC 3339 ('2026-10-25T19:50:12.123456789Z') or buildah's 'Oct 25, 2026 19:50' (local time) to a zone-aware datetime."""
+    text = text.strip()
+    try:
+        return datetime.strptime(text, "%b %d, %Y %H:%M").astimezone()
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", text.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+    return _aware(parsed)
+
+
 class Backend(ABC):
     """A runtime that can build, run and attach to ccd environments."""
 
     name: str
+    can_build = True
+    can_run = True
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         """Hook for contributing backend-specific CLI flags to build/run/attach."""
@@ -98,6 +178,18 @@ class Backend(ABC):
     def prune(self, options: dict[str, Any], dry_run: bool) -> list[str]:
         """Remove leftovers of dead runs (or only list them when dry_run); returns what was or would be done."""
         return []
+
+    def images(self, options: dict[str, Any]) -> list[ImageInfo]:
+        """Build data this backend holds (images, rootfs, kernel) for `ccd images`."""
+        return []
+
+    def built_image_id(self, request: BuildRequest) -> str:
+        """Builder side: id of the image the last build produced, or "" when there is none."""
+        return ""
+
+    def describe_image(self, built_id: str, options: dict[str, Any]) -> str:
+        """Runner side: how its prepared image relates to the builder's current image `built_id` (for `ccd status`)."""
+        return ""
 
     def image_formats(self) -> list[str]:
         """Builder side: formats this backend's builds can be provided in, cheapest first (e.g. ["docker-daemon"])."""

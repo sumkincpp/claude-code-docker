@@ -7,6 +7,7 @@ import platform
 import shutil
 import subprocess
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ccd.backends.firecracker import net as hostnet
@@ -14,7 +15,7 @@ from ccd.backends.firecracker import session as agent_session
 from ccd.backends.firecracker import vm as microvm
 from ccd.backends.firecracker.engines import ENGINES, Engine
 from ccd.backends.firecracker.prune import prune as prune_leftovers
-from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, RunRequest, timed
+from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, ImageInfo, RunRequest, format_age, short_id, timed
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,12 @@ def vm_subnet(options: dict) -> ipaddress.IPv4Network:
         raise BackendError(f"Invalid [firecracker] subnet: {e}") from e
 
 
+def describe_rootfs(rootfs: Path, stamp: Path) -> str:
+    """'image 15388f94c27c, built 2 hours ago': which image the rootfs was packed from, and when."""
+    image_id = short_id(stamp.read_text().rpartition(":")[0]) if stamp.exists() else "unknown"
+    return f"image {image_id}, built {format_age(datetime.fromtimestamp(rootfs.stat().st_mtime, timezone.utc))}"
+
+
 def cache_dir(options: dict) -> Path:
     return Path(options.get("cache_dir", CACHE_DIR)).expanduser()
 
@@ -67,6 +74,7 @@ def assets_hash() -> str:
 
 class FirecrackerBackend(Backend):
     name = "firecracker"
+    can_build = False  # images come from another backend (see accepted_formats)
 
     def check_available(self) -> None:
         if shutil.which("firecracker") is None:
@@ -79,6 +87,30 @@ class FirecrackerBackend(Backend):
             "Building images with the firecracker backend is not implemented yet; "
             'set [build] backend = "docker" (the image is handed over to firecracker automatically)'
         )
+
+    def describe_image(self, built_id: str, options: dict) -> str:
+        cache = cache_dir(options)
+        stamp = cache / "rootfs.image-id"
+        if not (cache / ROOTFS_NAME).exists() or not stamp.exists():
+            return "no rootfs yet (run 'ccd build')"
+        stamped_id, _, stamped_assets = stamp.read_text().rpartition(":")
+        if not built_id:
+            return "the build backend has no image to compare with (run 'ccd build')"
+        if stamped_id != built_id:
+            return "rootfs is built from an older image (run 'ccd build' to repack)"
+        if stamped_assets != assets_hash():
+            return "rootfs predates the current ccd VM files (run 'ccd build' to repack)"
+        return "rootfs is up to date"
+
+    def images(self, options: dict) -> list[ImageInfo]:
+        cache = cache_dir(options)
+        rows: list[ImageInfo] = []
+        for kind, path in (("rootfs", cache / ROOTFS_NAME), ("kernel", cache / "vmlinux")):
+            if path.exists():
+                info = path.stat()
+                image_id = (cache / "rootfs.image-id").read_text().rpartition(":")[0] if kind == "rootfs" and (cache / "rootfs.image-id").exists() else ""
+                rows.append(ImageInfo(self.name, kind, str(path), image_id, info.st_size, datetime.fromtimestamp(info.st_mtime, timezone.utc)))
+        return rows
 
     def accepted_formats(self) -> list[str]:
         return list(ENGINES)
@@ -202,6 +234,8 @@ class FirecrackerBackend(Backend):
             config_path = directory / "vm.json"
             config_path.write_text(json.dumps(config, indent=2))
 
+            logger.info("  Rootfs: %s (%s)", rootfs, describe_rootfs(rootfs, stamp))
+            logger.info("  Kernel: %s", kernel)
             logger.info("  VM: %s  guest %s  host %s  tap %s via %s", request.name, guest_ip, host_ip, net.tap, net.iface)
             hostnet.setup(net)
             self._run_agent_session(directory, config_path, request.root)

@@ -2,6 +2,7 @@
 
 import sys
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,18 @@ class RecordingBackend(plugin.Backend):
         if self.import_fails:
             raise plugin.BackendError("import failed")
 
+    built_id = "id-1"
+    verdict = ""
+
+    def built_image_id(self, request):
+        return self.built_id
+
+    def images(self, options):
+        return [plugin.ImageInfo(self.name, "image", "ccd", self.built_id, 1_000_000, datetime(2026, 10, 25, 20, 55, tzinfo=timezone.utc))]
+
+    def describe_image(self, built_id, options):
+        return self.verdict
+
     def prune(self, options, dry_run):
         CALLS.append((self.name, "prune", dry_run))
         return ["removed leftover"]
@@ -69,6 +82,7 @@ class FakeDockerLike(RecordingBackend):
     name = "fake-docker"
 
     offers = ["docker-daemon"]
+    built_id = "sha256:abc"
 
 
 @pytest.fixture
@@ -79,6 +93,12 @@ def ccd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     for name, cls in (("fake", RecordingBackend), ("fake-build", FakeBuilder), ("fake-run", FakeRunner), ("fake-docker", FakeDockerLike)):
         monkeypatch.setitem(plugin.BUILTIN_BACKENDS, name, f"{__name__}:{cls.__name__}")
+    # The shipped backends must not touch the developer's docker, buildah or KVM; tests that need one re-enable it
+    def unavailable(self):
+        raise plugin.BackendError("disabled in tests")
+
+    for real in ("docker.DockerBackend", "buildah.BuildahBackend", "firecracker.FirecrackerBackend"):
+        monkeypatch.setattr(f"ccd.backends.{real}.check_available", unavailable)
     # Keep the developer's real ~/.config/ccd/ccd.toml out of the tests
     original = RunConfig.load_effective.__func__
     monkeypatch.setattr(RunConfig, "load_effective", classmethod(lambda cls, local, global_path=tmp_path / "no-global.toml": original(cls, local, global_path)))

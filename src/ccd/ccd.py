@@ -25,8 +25,11 @@ from ccd.plugin import (
     ResolvedMount,
     RunRequest,
     available_backends,
+    format_age,
     get_backend,
     hand_over,
+    human_size,
+    short_id,
     timed,
 )
 
@@ -268,14 +271,84 @@ def run_backend_name(args: argparse.Namespace, run_config: RunConfig) -> str:
     return getattr(args, "backend", None) or run_config.backend or DEFAULT_BACKEND
 
 
+def resolve_backends(run_config: RunConfig, build_config: BuildConfig, build_override: str | None = None) -> tuple[str, str]:
+    """(build backend, run backend): CLI override beats [build].backend beats the run backend."""
+    run_name = run_config.backend or DEFAULT_BACKEND
+    return build_override or build_config.backend or run_name, run_name
+
+
+def try_backend(name: str, run_config: RunConfig) -> tuple[Backend | None, dict, str]:
+    """Load a backend for reporting commands: (backend, options, "") or (None, {}, why it is unavailable)."""
+    try:
+        backend, options = load_backend(name, run_config)
+    except BackendError as e:
+        return None, {}, str(e)
+    return backend, options, ""
+
+
+def print_table(rows: list[tuple[str, ...]]) -> None:
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+    for row in rows:
+        print("  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip())
+
+
+def show_backends(run_config: RunConfig) -> None:
+    rows = [("BACKEND", "CAN", "STATE")]
+    for name, entry in sorted(available_backends().items()):
+        plugin = entry.load()
+        can = "+".join(w for w, ok in (("build", plugin.can_build), ("run", plugin.can_run)) if ok)
+        backend, _, why = try_backend(name, run_config)
+        rows.append((name, can, "ready" if backend else f"not ready: {why}"))
+    print_table(rows)
+
+
+def show_images(run_config: RunConfig, only: str | None = None) -> None:
+    """Build data of every backend that is ready (build data can sit in several places), or of just `only`."""
+    rows = [("BACKEND", "KIND", "NAME", "ID", "SIZE", "CREATED")]
+    for name in [only] if only else sorted(available_backends()):
+        backend, options, why = try_backend(name, run_config)
+        if backend is None:
+            if only:
+                print(f"{name}: not ready: {why}")
+            continue
+        rows += [
+            (i.backend, i.kind, i.name, short_id(i.id), human_size(i.size) if i.size is not None else "", format_age(i.created) if i.created else "")
+            for i in backend.images(options)
+        ]
+    if len(rows) == 1:
+        print("No build data yet (run 'ccd build')")
+    else:
+        print_table(rows)
+
+
+def show_status(run_config: RunConfig, build_override: str | None = None) -> None:
+    build_config = BuildConfig.load(Path(CONFIG_FILE_NAME))
+    build_name, run_name = resolve_backends(run_config, build_config, build_override)
+    builder, builder_options, build_why = try_backend(build_name, run_config)
+    runner, runner_options, run_why = try_backend(run_name, run_config)
+
+    print(f"Build backend: {build_name} ({'ready' if builder else 'not ready: ' + build_why})")
+    print(f"Run backend:   {run_name} ({'ready' if runner else 'not ready: ' + run_why})")
+    built_id = ""
+    if builder is not None:
+        built_id = builder.built_image_id(BuildRequest(image_name=IMAGE_NAME, config=build_config, options=builder_options))
+        print(f"Image '{IMAGE_NAME}' in {build_name}: {built_id or 'not built (run ccd build)'}")
+    if runner is not None and build_name != run_name:
+        verdict = runner.describe_image(built_id, runner_options)
+        if verdict:
+            print(f"Image for {run_name}: {verdict}")
+    if runner is not None:
+        running = get_running_containers(runner)
+        print(f"Running: {', '.join(running) if running else 'nothing'}")
+
+
 def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: list[str]) -> None:
     """Build with the build backend; when it differs from the run backend, hand the image over."""
     config = BuildConfig.load(Path(CONFIG_FILE_NAME)).apply_cli(args)
     config.validate()
     logger.debug("Effective build config: %s", config)
 
-    run_name = run_config.backend or DEFAULT_BACKEND
-    build_name = args.backend or config.backend or run_name
+    build_name, run_name = resolve_backends(run_config, config, args.backend)
 
     builder, builder_options = load_backend(build_name, run_config)
     with timed(f"Build ({build_name})", logger):
@@ -372,7 +445,11 @@ def main() -> None:
     add_user_arg(attach_parser)
     add_backend_arg(attach_parser)
 
-    command_parser.add_parser("backends", help="List installed backend plugins")
+    command_parser.add_parser("backends", help="List installed backend plugins and whether they are ready")
+    images_parser = command_parser.add_parser("images", help="List the build data (images, rootfs, kernel) of all ready backends")
+    images_parser.add_argument("--backend", default=None, help="Only list this backend")
+    status_parser = command_parser.add_parser("status", help="Show the configured backends, the built image and whether the run backend's copy is current")
+    status_parser.add_argument("--backend", default=None, help="Build backend to compare with (default: as configured, like ccd build --backend)")
 
     prune_parser = command_parser.add_parser("prune", help="Remove leftovers of dead runs (VM state, taps, exports, firewall rules)")
     prune_parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True, help="Only list what would be removed (default); --no-dry-run removes it")
@@ -389,14 +466,15 @@ def main() -> None:
     logger.debug("Image name: %s", IMAGE_NAME)
 
     try:
-        if args.command == "backends":
-            for name in sorted(available_backends()):
-                print(name)
-            return
-
         run_config = RunConfig.load_effective(Path(CONFIG_FILE_NAME))
 
-        if args.command == "build":
+        if args.command == "backends":
+            show_backends(run_config)
+        elif args.command == "images":
+            show_images(run_config, args.backend)
+        elif args.command == "status":
+            show_status(run_config, args.backend)
+        elif args.command == "build":
             logger.debug("Executing build command")
             build_image(args, run_config, unknown)
         elif args.command in ("run", "."):

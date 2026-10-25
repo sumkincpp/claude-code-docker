@@ -1,3 +1,4 @@
+import json
 import logging
 import shlex
 import shutil
@@ -5,7 +6,7 @@ import subprocess
 import sys
 
 from ccd.backends.common import to_docker_build_args
-from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, RunRequest
+from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, ImageInfo, RunRequest, parse_time
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,22 @@ class DockerBackend(Backend):
 
     def image_formats(self) -> list[str]:
         return ["docker-daemon"]
+
+    def built_image_id(self, request: BuildRequest) -> str:
+        result = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", request.image_name], capture_output=True, text=True, check=False)
+        return result.stdout.strip()
+
+    def images(self, options: dict) -> list[ImageInfo]:
+        # Unknown images make the exit code non-zero, but the ones that exist are still printed
+        out = subprocess.run(["docker", "image", "inspect", "ccd", "ccd-vm"], capture_output=True, text=True, check=False).stdout
+        try:
+            entries = json.loads(out)
+        except ValueError:
+            return []
+        return [
+            ImageInfo(self.name, "image", (entry.get("RepoTags") or ["?"])[0], entry.get("Id", ""), entry.get("Size"), parse_time(entry.get("Created", "")))
+            for entry in entries
+        ]
 
     def list_running(self) -> list[str]:
         cmd = ["docker", "ps", "--format", "{{.Names}}"]

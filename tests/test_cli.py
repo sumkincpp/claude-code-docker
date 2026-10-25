@@ -316,3 +316,189 @@ def test_docker_image_is_packed_by_docker_and_owned_by_the_invoking_user(ccd, tm
     run = next(cmd for cmd in commands if cmd[:2] == ["docker", "run"])
     assert f"chown {os.getuid()}:{os.getgid()} /out/{fc.TMP_ROOTFS}" in run[-1]
     assert (cache / "rootfs.squashfs").exists()
+
+
+def test_images_lists_every_ready_backend_not_only_the_configured_ones(ccd, capsys):
+    ccd("images", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n')
+
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].split() == ["BACKEND", "KIND", "NAME", "ID", "SIZE", "CREATED"]
+    assert [line.split()[0] for line in out[1:]] == ["fake", "fake-build", "fake-docker", "fake-run"]  # not-ready backends (docker, ...) are skipped
+
+
+def test_images_backend_flag_restricts_the_listing(ccd, capsys):
+    ccd("images", "--backend", "fake-run")
+    assert [line.split()[0] for line in capsys.readouterr().out.splitlines()[1:]] == ["fake-run"]
+
+    ccd("images", "--backend", "docker")  # asked for explicitly: say why there is nothing
+    assert "docker: not ready: disabled in tests" in capsys.readouterr().out
+
+
+def test_status_backend_flag_overrides_the_build_backend(ccd, monkeypatch, capsys):
+    from conftest import FakeBuilder
+
+    monkeypatch.setattr(FakeBuilder, "built_id", "id-from-override")
+
+    ccd("status", "--backend", "fake-build", toml='[build]\nbackend = "fake"\n\n[run]\nbackend = "fake-run"\n')
+
+    assert "Image 'ccd' in fake-build: id-from-override" in capsys.readouterr().out
+
+
+def test_status_reports_backends_image_and_the_run_backends_verdict(ccd, monkeypatch, capsys):
+    from conftest import FakeRunner
+
+    monkeypatch.setattr(FakeRunner, "verdict", "rootfs is up to date")
+    monkeypatch.setattr(FakeRunner, "running", ["ccd-app-01"])
+
+    ccd("status", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n')
+
+    out = capsys.readouterr().out
+    assert "Build backend: fake-build (ready)" in out and "Run backend:   fake-run (ready)" in out
+    assert "Image 'ccd' in fake-build: id-1" in out
+    assert "Image for fake-run: rootfs is up to date" in out
+    assert "Running: ccd-app-01" in out
+
+
+def test_status_shows_when_firecracker_rootfs_is_older_than_the_docker_image(ccd, tmp_path, monkeypatch, capsys):
+    cache, toml = _firecracker_cache(tmp_path, monkeypatch)  # stamp says: built from sha256:abc
+    config = '[build]\nbackend = "fake-docker"\n\n[run]\nbackend = "firecracker"\n' + toml
+
+    ccd("status", toml=config)
+    assert "rootfs is up to date" in capsys.readouterr().out
+
+    (cache / "rootfs.image-id").write_text("sha256:old:" + (cache / "rootfs.image-id").read_text().rpartition(":")[2])
+    ccd("status", toml=config)
+    assert "built from an older image" in capsys.readouterr().out
+
+
+def test_backends_shows_what_each_can_do_and_whether_it_is_ready(ccd, monkeypatch, capsys):
+    monkeypatch.setattr("ccd.backends.firecracker.FirecrackerBackend.check_available", lambda self: (_ for _ in ()).throw(plugin_error("no KVM")))
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+
+    ccd("backends")
+
+    rows = {line.split()[0]: line for line in capsys.readouterr().out.splitlines()[1:]}
+    assert "build+run" in rows["docker"] and "ready" in rows["docker"]
+    assert rows["buildah"].split()[1] == "build"  # builds only
+    assert "not ready: no KVM" in rows["firecracker"]
+
+
+def plugin_error(message):
+    from ccd.plugin import BackendError
+
+    return BackendError(message)
+
+
+def test_images_lists_buildah_images_from_its_json_output(ccd, monkeypatch, capsys):
+    import json
+    import subprocess
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+    listing = [
+        {"id": "15388f94c27c", "names": ["localhost/ccd:latest"], "size": "3.7 GB", "createdat": "2 hours ago"},  # buildah only lists relative ages
+        {"id": "223950bd783", "names": ["localhost/ccd-vm:latest"], "size": 3730000000, "createdat": "2 hours ago"},
+        {"id": "aaaa", "names": ["docker.io/library/alpine:3.24"], "size": "8 MB", "createdat": "a month ago"},  # not ours
+        {"id": "bbbb", "names": None, "size": "1 MB", "createdat": "a month ago"},  # dangling layer
+    ]
+    now = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("ccd.plugin.utcnow", lambda: now)  # no real clock: the test must not depend on when or where it runs
+    two_hours_ago = (now - timedelta(hours=2)).isoformat()
+
+    def fake_run(cmd, **kwargs):
+        out = json.dumps({"OCIv1": {"created": two_hours_ago}}) if cmd[1] == "inspect" else json.dumps(listing)
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="WARN something")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ccd("images", "--backend", "buildah")
+
+    lines = capsys.readouterr().out.splitlines()[1:]
+    assert [line.split()[:3] for line in lines] == [["buildah", "image", "localhost/ccd:latest"], ["buildah", "image", "localhost/ccd-vm:latest"]]
+    assert "15388f94c27c" in lines[0] and "3.7GB" in lines[0] and "3.7GB" in lines[1]  # "3.7 GB" text and plain bytes look the same
+    assert "2 hours ago" in lines[0] and "2 hours ago" in lines[1]
+
+
+def test_images_tolerates_unparseable_buildah_output(ccd, monkeypatch, capsys):
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="not json", stderr=""))
+
+    code, _ = ccd("images", "--backend", "buildah")
+
+    assert code == 0 and "No build data yet" in capsys.readouterr().out
+
+
+def test_images_shows_id_size_and_age_the_same_way_for_every_backend(ccd, tmp_path, monkeypatch, capsys):
+    import json
+    import subprocess
+    from datetime import datetime, timedelta, timezone
+
+    _, toml = _firecracker_cache(tmp_path, monkeypatch)  # stamp: "sha256:abc:<assets hash>"
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+    now = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("ccd.plugin.utcnow", lambda: now)  # fixed clock, so the day arithmetic cannot depend on timezone or DST
+    docker_inspect = [{"Id": "sha256:f86a9d67e2ce" + "0" * 52, "RepoTags": ["ccd:latest"], "Size": 3_720_000_000, "Created": (now - timedelta(days=3, hours=1)).strftime("%Y-%m-%dT%H:%M:%S.123456789Z")}]
+    old = now - timedelta(days=30)
+    buildah_list = [{"id": "15388f94c27c", "names": ["localhost/ccd:latest"], "size": "3.72 GB", "createdat": "a month ago"}]
+    buildah_inspect = {"OCIv1": {"created": old.isoformat()}}
+
+    def fake_run(cmd, **kwargs):
+        out = {"docker": json.dumps(docker_inspect), "buildah": json.dumps(buildah_inspect if cmd[1] == "inspect" else buildah_list)}.get(cmd[0], "")
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ccd("images", toml=toml)
+
+    rows = {line.split()[0]: line.split() for line in capsys.readouterr().out.splitlines()[1:] if line.split()[1] in ("image", "rootfs")}
+    assert rows["docker"][3:] == ["f86a9d67e2ce", "3.7GB", "3", "days", "ago"]  # recent: relative
+    assert rows["buildah"][3:] == ["15388f94c27c", "3.7GB", old.astimezone().strftime("%Y-%m-%d")]  # older than a week: the date
+    assert rows["firecracker"][3] == "abc"  # the same short form: no "sha256:" prefix, at most 12 characters
+
+
+def test_age_is_relative_for_a_week_then_a_date():
+    from datetime import datetime, timedelta, timezone
+
+    from ccd.plugin import format_age
+
+    now = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)  # zone-aware, so the result does not depend on the machine's timezone
+    assert format_age(now - timedelta(seconds=20), now) == "just now"
+    assert format_age(now - timedelta(minutes=1), now) == "1 minute ago"
+    assert format_age(now - timedelta(minutes=59), now) == "59 minutes ago"
+    assert format_age(now - timedelta(hours=2), now) == "2 hours ago"
+    assert format_age(now - timedelta(days=6, hours=23), now) == "6 days ago"
+    assert format_age(now - timedelta(days=7), now) == (now - timedelta(days=7)).astimezone().strftime("%Y-%m-%d")  # local date
+
+
+def test_firecracker_run_logs_which_image_the_rootfs_was_built_from(ccd, tmp_path, monkeypatch, capsys):
+    from ccd.backends import firecracker as fc
+
+    cache, toml = _firecracker_cache(tmp_path, monkeypatch)  # stamp: "sha256:abc:<assets hash>"
+    monkeypatch.setattr(fc.hostnet, "setup", lambda net: None)
+    monkeypatch.setattr(fc.hostnet, "teardown", lambda net: None)
+    monkeypatch.setattr(fc.hostnet, "host_networks", lambda: [])
+    monkeypatch.setattr(fc.microvm, "make_upper", lambda path, size: path.write_bytes(b""))
+    monkeypatch.setattr(fc.FirecrackerBackend, "_run_agent_session", staticmethod(lambda *args: None))
+    (tmp_path / "app").mkdir()
+
+    code, _ = ccd("-v", "run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", toml=toml + 'dns = ["1.1.1.1"]\n')
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert f"Rootfs: {cache / 'rootfs.squashfs'} (image abc, built just now)" in out
+    assert f"Kernel: {cache / 'vmlinux'}" in out
+
+
+def test_age_ignores_the_systems_timezone_and_dst_changes():
+    from datetime import datetime, timedelta, timezone
+
+    from ccd.plugin import format_age
+
+    created = datetime(2026, 10, 22, 18, 0, tzinfo=timezone(timedelta(hours=2)))  # 16:00 UTC, summer time
+    now = datetime(2026, 10, 25, 16, 30, tzinfo=timezone.utc)  # three days and half an hour later; the clocks went back in between
+
+    assert format_age(created, now) == "3 days ago"  # wall-clock subtraction (18:00 -> 17:30) would give 2 days
