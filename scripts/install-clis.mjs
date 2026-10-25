@@ -21,14 +21,19 @@ const NOW = Date.now();
 // When set, only install this one component (used for per-layer Docker caching).
 const INSTALL_COMPONENT = process.env.INSTALL_COMPONENT ?? null;
 
+// builtDependency: true  — package downloads a platform-native binary via postinstall;
+//   we fetch its optionalDependencies from the registry and build a precise allowlist.
+// allowAllBuilds: true   — package has transitive regular dependencies that need build
+//   scripts (e.g. koffi, protobufjs); their names can't be enumerated without recursively
+//   resolving the dep tree, so we use dangerously-allow-all-builds scoped to the install dir.
 const ALL_COMPONENTS = [
-  { component: "claude",    package: "@anthropic-ai/claude-code",        version: process.env.CLAUDE_VERSION    ?? "latest", binary: "claude",    enabled: process.env.WITH_CLAUDE    !== "0", builtDependency: true  },
-  { component: "codex",     package: "@openai/codex",                    version: process.env.CODEX_VERSION     ?? "latest", binary: "codex",     enabled: process.env.WITH_CODEX     !== "0", builtDependency: false },
-  { component: "gemini",    package: "@google/gemini-cli",               version: process.env.GEMINI_VERSION    ?? "latest", binary: "gemini",    enabled: process.env.WITH_GEMINI    !== "0", builtDependency: false },
-  { component: "jules",     package: "@google/jules",                    version: process.env.JULES_VERSION     ?? "latest", binary: "jules",     enabled: process.env.WITH_JULES     === "1", builtDependency: false },
-  { component: "opencode",  package: "opencode-ai",                      version: process.env.OPENCODE_VERSION  ?? "latest", binary: "opencode",  enabled: process.env.WITH_OPENCODE  !== "0", builtDependency: false },
-  { component: "copilot",   package: "@github/copilot",                  version: process.env.COPILOT_VERSION   ?? "latest", binary: "copilot",   enabled: process.env.WITH_COPILOT   !== "0", builtDependency: false },
-  { component: "pi",        package: "@mariozechner/pi-coding-agent",    version: process.env.PI_VERSION        ?? "latest", binary: "pi",        enabled: process.env.WITH_PI        !== "0", builtDependency: false },
+  { component: "claude",    package: "@anthropic-ai/claude-code",        version: process.env.CLAUDE_VERSION    ?? "latest", binary: "claude",    enabled: process.env.WITH_CLAUDE    !== "0", builtDependency: true,  allowAllBuilds: false },
+  { component: "codex",     package: "@openai/codex",                    version: process.env.CODEX_VERSION     ?? "latest", binary: "codex",     enabled: process.env.WITH_CODEX     !== "0", builtDependency: false, allowAllBuilds: false },
+  { component: "gemini",    package: "@google/gemini-cli",               version: process.env.GEMINI_VERSION    ?? "latest", binary: "gemini",    enabled: process.env.WITH_GEMINI    !== "0", builtDependency: false, allowAllBuilds: true  },
+  { component: "jules",     package: "@google/jules",                    version: process.env.JULES_VERSION     ?? "latest", binary: "jules",     enabled: process.env.WITH_JULES     === "1", builtDependency: false, allowAllBuilds: false },
+  { component: "opencode",  package: "opencode-ai",                      version: process.env.OPENCODE_VERSION  ?? "latest", binary: "opencode",  enabled: process.env.WITH_OPENCODE  !== "0", builtDependency: true,  allowAllBuilds: false },
+  { component: "copilot",   package: "@github/copilot",                  version: process.env.COPILOT_VERSION   ?? "latest", binary: "copilot",   enabled: process.env.WITH_COPILOT   !== "0", builtDependency: false, allowAllBuilds: false },
+  { component: "pi",        package: "@earendil-works/pi-coding-agent",  version: process.env.PI_VERSION        ?? "latest", binary: "pi",        enabled: process.env.WITH_PI        !== "0", builtDependency: false, allowAllBuilds: true  },
 ];
 
 if (INSTALL_COMPONENT !== null && !ALL_COMPONENTS.some(c => c.component === INSTALL_COMPONENT)) {
@@ -97,12 +102,16 @@ function formatWaitTime(remainingMs) {
 // workspace-level settings (minimumReleaseAge, allowBuilds) apply to its dependencies.
 // packages: [] (explicitly empty) is ambiguous across pnpm versions and caused
 // onlyBuiltDependencies to be silently ignored in several pnpm 10.x releases.
-function buildWorkspaceYaml(releaseAgeMinutes, ignoreCves, allowedBuilds = []) {
+function buildWorkspaceYaml(releaseAgeMinutes, ignoreCves, allowedBuilds = [], dangerouslyAllowAllBuilds = false) {
   const lines = ['packages:', '  - "."'];
   if (releaseAgeMinutes > 0) {
     lines.push(`minimumReleaseAge: ${releaseAgeMinutes}`);
   }
-  if (allowedBuilds.length > 0) {
+  if (dangerouslyAllowAllBuilds) {
+    // dangerouslyAllowAllBuilds is a workspace-level setting; .npmrc does not support it.
+    // Used for packages whose transitive build-script deps can't be enumerated ahead of time.
+    lines.push("dangerouslyAllowAllBuilds: true");
+  } else if (allowedBuilds.length > 0) {
     if (PNPM_MAJOR >= 11) {
       // pnpm 11+: onlyBuiltDependencies renamed to allowBuilds (boolean map)
       lines.push("allowBuilds:");
@@ -140,7 +149,7 @@ function run(cmd, cwd) {
   execSync(cmd, { cwd, stdio: "inherit" });
 }
 
-async function installCli({ component, package: packageName, version: versionSpec, binary, enabled, builtDependency }) {
+async function installCli({ component, package: packageName, version: versionSpec, binary, enabled, builtDependency, allowAllBuilds }) {
   if (!enabled) return;
 
   const forceFix = AUDIT_FORCE_FIX_COMPONENTS.includes(component);
@@ -185,9 +194,12 @@ async function installCli({ component, package: packageName, version: versionSpe
   if (releaseAgeMinutes === 0 && RELEASE_AGE_MINUTES > 0) {
     console.log(`[${component}] release-age policy disabled (exempted component)`);
   }
+  // allowAllBuilds: packages with transitive regular deps that have build scripts
+  // (e.g. pi → koffi, protobufjs) — names can't be enumerated ahead of time so we use
+  // dangerouslyAllowAllBuilds, which is a workspace-level setting (not supported in .npmrc).
   fs.writeFileSync(
     path.join(installDir, "pnpm-workspace.yaml"),
-    buildWorkspaceYaml(releaseAgeMinutes, AUDIT_IGNORE_CVES, allowedBuilds)
+    buildWorkspaceYaml(releaseAgeMinutes, AUDIT_IGNORE_CVES, allowedBuilds, allowAllBuilds)
   );
 
   run("pnpm install", installDir);
