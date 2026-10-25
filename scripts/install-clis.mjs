@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { execSync } from "child_process";
+import { fetchRegistryData, resolveVersion } from "./resolve-version.mjs";
 
 const INSTALL_ROOT = process.env.PNPM_CLI_INSTALL_ROOT ?? path.join(os.homedir(), ".local/share/ccd/pnpm-installs");
 const METADATA_ROOT = process.env.PNPM_CLI_METADATA_ROOT ?? "/metadata";
@@ -42,42 +43,6 @@ if (RELEASE_AGE_DAYS > 0) {
   console.log(`Applying release-age policy: ${RELEASE_AGE_DAYS} days (${RELEASE_AGE_MINUTES} minutes) via pnpm minimumReleaseAge`);
 } else {
   console.log("Applying release-age policy: disabled");
-}
-
-async function fetchRegistryData(packageName) {
-  const url = `https://registry.npmjs.org/${encodeURIComponent(packageName).replace("%40", "@")}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Registry fetch failed for ${packageName}: ${res.status}`);
-  return res.json();
-}
-
-function resolveVersion(registryData, versionSpec, releaseAgeDays) {
-  const times = registryData.time ?? {};
-  const versions = registryData.versions ?? {};
-  const cutoffEpoch = releaseAgeDays > 0 ? NOW - releaseAgeDays * 86400 * 1000 : null;
-  const stablePattern = /^\d+\.\d+\.\d+$/;
-
-  if (versionSpec !== "latest") {
-    return versionSpec;
-  }
-
-  let selected = null;
-  let selectedEpoch = null;
-
-  for (const version of Object.keys(versions)) {
-    if (!stablePattern.test(version)) continue;
-    const publishedAt = times[version];
-    if (!publishedAt) continue;
-    const epoch = Date.parse(publishedAt);
-    if (!Number.isFinite(epoch)) continue;
-    if (cutoffEpoch !== null && epoch > cutoffEpoch) continue;
-    if (selectedEpoch === null || epoch > selectedEpoch) {
-      selected = version;
-      selectedEpoch = epoch;
-    }
-  }
-
-  return selected;
 }
 
 function findNextVersionAfter(registryData, publishedAfter) {
