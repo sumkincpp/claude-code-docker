@@ -1,12 +1,16 @@
 [build]
+# Backend that builds the image (default: the [run] backend). Building with docker and
+# running on firecracker hands the image over automatically.
+backend = "docker"
+
 # Minimum release age in days for npm packages resolved by tag (e.g. latest)
-npm_min_release_age_days = 7
+npm_min_release_age_days = 2
 
 # Components exempt from the minimum release age check
-npm_min_release_age_ignore_components = []
+npm_min_release_age_ignore_components = ["pi"]
 
 # Components whose npm audit failure should be ignored
-# npm_audit_ignore_components = []
+npm_audit_ignore_components = []
 
 # Components that run 'npm audit fix --force' before audit checks
 npm_audit_force_fix_components = ["pi"]
@@ -43,22 +47,22 @@ with_features = ["codex", "claude", "pi", "copilot", "rust"]
 
 [[run.mounts]]
 host      = "~/.local/share/uv"
-container = "/home/ubuntu/.local/share/uv"
+container = "/home/user/.local/share/uv"
 optional  = true
 
 #[[run.mounts]]
 #host      = "~/.gitconfig"
-#container = "/home/ubuntu/.gitconfig"
+#container = "/home/user/.gitconfig"
 #type      = "file"
 #optional  = true
 
 #[[run.mounts]]
 #host      = "~/.config/git"
-#container = "/home/ubuntu/.config/git"
+#container = "/home/user/.config/git"
 #optional  = true
 
 # [[run.mounts]]
 # host      = "~/.ssh"
-# container = "/home/ubuntu/.ssh"
+# container = "/home/user/.ssh"
 # readonly  = true
 # optional  = true

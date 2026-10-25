@@ -1,3 +1,33 @@
-.mypy_cache
-.venv
-.venv2
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv2/
+.mypy_cache/
+dist/
+build/
+
+# uv
+.python-version
+uv.lock
+
+# Development / IDE
+.git/
+.github/
+.claude/
+.vscode/
+.idea/
+
+# Docs and assets
+docs/
+README.md
+
+# Makefile (not needed inside image)
+Makefile
+
+# Scan artifacts
+scan-results*.txt
+
+# Runtime config (not needed at build time)
+ccd.toml

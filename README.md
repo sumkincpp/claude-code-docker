@@ -9,7 +9,7 @@
 It builds a Docker image with one or more assistant CLIs and runs them against your local app folder.
 Toolchains stay isolated while your project files remain local and editable.
 
-Base image: Ubuntu 24.04 with Node.js, Python, and uv installed.
+Base image: Alpine 3.24 with Node.js, Python, and uv installed.
 
 **Why?**
 
@@ -49,6 +49,12 @@ Exclude `rust` with `--without rust` to keep the image smaller.
 - `copilot` - GitHub Copilot CLI
 - `pi` - Pi Coding Agent CLI
 - `jules` - Jules CLI (disabled by default)
+
+### CLI Isolation
+
+Each pnpm CLI tool is installed into its own directory under `~/.local/share/ccd/pnpm-installs/<name>/`.
+
+At runtime each binary in `~/.local/bin/` is a small wrapper script pointing into its own install directory.
 
 ### Runtimes
 
@@ -93,13 +99,16 @@ ccd build --without opencode,copilot
 ccd -vv build --no-cache
 ```
 
-With that an image named `claude-code:latest` is built.
+With that an image named `ccd:latest` is built.
 
-### Npm Install Policy
+### Version Pinning and Release-Age Policy
+
+#### npm-distributed tools (AI CLIs, npm, pnpm)
 
 The Docker image resolves npm-distributed CLIs at build time through a release-age policy.
-If a CLI version is left at `latest`, the build installs `package@latest` with npm's `--before <cutoff>` filter,
-so npm picks the newest allowed top-level version and applies the same cutoff while resolving transitives.
+If a CLI version is left at `latest`, the build queries the npm registry directly, filters out releases
+newer than the cutoff, and installs the newest qualifying version. pnpm's `minimumReleaseAge` setting
+enforces the same cutoff for transitive dependencies.
 
 Default:
 
@@ -115,12 +124,32 @@ ccd build --claude-version 2.1.117
 ccd build --npm-min-release-age-days 0
 ccd build --npm-audit-ignore-components pi
 ccd build --npm-audit-force-fix-components pi
+ccd build --no-cooldown pi
 ```
 
 - CCD resolves and installs each npm CLI, then runs signature audit.
 - npm audit failures fail the build.
-- Use ignore or force-fix flags per component `--npm-audit-ignore-components`/`--npm-audit-force-fix-components` to ignore/force fix component
+- Use ignore or force-fix flags per component `--npm-audit-ignore-components`/`--npm-audit-force-fix-components` to ignore/force fix component.
+- Use `--no-cooldown <component>` to bypass the release-age gate for a specific component (e.g. when a patched version was just released).
 - Resolution metadata is saved under /metadata/
+
+#### Other runtimes (uv, Rust, nvm)
+
+`uv`, `rustup`, and `nvm` default to **latest with no cooldown**. Each is fetched via its own
+install script at build time and not gated by `NPM_CLI_MIN_RELEASE_AGE_DAYS`.
+Pin them explicitly in `ccd.toml` if reproducibility matters:
+
+```toml
+[versions]
+uv   = "0.7.2"
+# node and nvm are pinned in the Dockerfile ARGs; override via --build-arg at build time
+```
+
+Or pass build args directly:
+
+```bash
+ccd build --uv-version 0.7.2
+```
 
 ### Run Container (ccd run / ccd .)
 
@@ -275,7 +304,7 @@ npm_audit_force_fix_components = []
 # Pin individual tool versions (omit to use Dockerfile defaults)
 # claude  = "latest"
 # codex   = "latest"
-# node    = "22"
+# node    = "24"
 # uv      = "0.7.2"
 ```
 
@@ -294,7 +323,7 @@ cpus   = "4"
 
 [[run.mounts]]
 host      = "~/.ssh"
-container = "/home/ubuntu/.ssh"
+container = "/home/user/.ssh"
 readonly  = true
 optional  = true   # silently skip if path is absent or a broken symlink
 
@@ -311,24 +340,24 @@ Recommended global config (`~/.config/ccd/ccd.toml`) to mount common host creden
 
 [[run.mounts]]
 host      = "~/.gitconfig"
-container = "/home/ubuntu/.gitconfig"
+container = "/home/user/.gitconfig"
 type      = "file"
 optional  = true
 
 [[run.mounts]]
 host      = "~/.config/git"
-container = "/home/ubuntu/.config/git"
+container = "/home/user/.config/git"
 optional  = true
 
 [[run.mounts]]
 host      = "~/.ssh"
-container = "/home/ubuntu/.ssh"
+container = "/home/user/.ssh"
 readonly  = true
 optional  = true
 
 [[run.mounts]]
 host      = "~/.local/share/uv"
-container = "/home/ubuntu/.local/share/uv"
+container = "/home/user/.local/share/uv"
 optional  = true
 ```
 
@@ -337,12 +366,12 @@ optional  = true
 The following host paths are always mounted into the container:
 
 - `{app_folder}` → `/app` (container working directory)
-- `{home_folder}/.claude` → `/home/ubuntu/.claude`
-- `{home_folder}/.claude.json` → `/home/ubuntu/.claude.json`
-- `{home_folder}/.gemini` → `/home/ubuntu/.gemini`
-- `{home_folder}/.codex` → `/home/ubuntu/.codex`
-- `{home_folder}/.copilot` → `/home/ubuntu/.copilot`
-- `{home_folder}/.pi` → `/home/ubuntu/.pi`
+- `{home_folder}/.claude` → `/home/user/.claude`
+- `{home_folder}/.claude.json` → `/home/user/.claude.json`
+- `{home_folder}/.gemini` → `/home/user/.gemini`
+- `{home_folder}/.codex` → `/home/user/.codex`
+- `{home_folder}/.copilot` → `/home/user/.copilot`
+- `{home_folder}/.pi` → `/home/user/.pi`
 
 Additional mounts can be added via `[[run.mounts]]` in `ccd.toml` (see above).
 
@@ -374,7 +403,7 @@ uv run ccd --help
 ## FAQ
 
 - Q: Where do credentials live on the host?
-- A: Under the `--home` directory (default: `$HOME/.claude-code-docker`), mounted into `/home/ubuntu`.
+- A: Under the `--home` directory (default: `$HOME/.claude-code-docker`), mounted into `/home/user`.
 
 - Q: Can I use a custom container name?
 - A: The name is auto-generated based on the app folder name as `ccd-{folder_name}`. You can attach via `ccd attach` without knowing it.
