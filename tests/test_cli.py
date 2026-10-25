@@ -502,3 +502,119 @@ def test_age_ignores_the_systems_timezone_and_dst_changes():
     now = datetime(2026, 10, 25, 16, 30, tzinfo=timezone.utc)  # three days and half an hour later; the clocks went back in between
 
     assert format_age(created, now) == "3 days ago"  # wall-clock subtraction (18:00 -> 17:30) would give 2 days
+
+
+def _podman(monkeypatch, exists=True):
+    """Make podman 'installed' and record every command it is given."""
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.check_available", lambda self: None)
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd if isinstance(cmd, list) else cmd.split())
+        return subprocess.CompletedProcess(cmd, 0 if exists or cmd[:3] != ["podman", "image", "exists"] else 1, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return commands
+
+
+def test_podman_builds_and_runs_localhost_images(ccd, tmp_path, monkeypatch):
+    commands = _podman(monkeypatch)
+    (tmp_path / "app").mkdir()
+
+    ccd("build", "--backend", "podman")
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "podman", "-u", "root", "--memory", "2g")
+
+    build = next(cmd for cmd in commands if cmd[:2] == ["podman", "build"])
+    assert build[-3:-1] == ["-t", "localhost/ccd"] or "localhost/ccd" in build  # podman needs the localhost/ prefix
+    run = next(cmd for cmd in commands if cmd[:2] == ["podman", "run"])
+    assert run[-1] == "localhost/ccd" and ["--user", "root"] == run[run.index("--user") : run.index("--user") + 2]
+    assert "2g" in run and any(arg.endswith(":/app") for arg in run)
+
+
+def test_podman_runs_an_image_built_by_buildah_without_copying_it(ccd, monkeypatch):
+    commands = _podman(monkeypatch)
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+
+    code, _ = ccd("build", toml='[build]\nbackend = "buildah"\n\n[run]\nbackend = "podman"\n')
+
+    assert code == 0
+    assert ["podman", "image", "exists", "localhost/ccd"] in commands
+    assert not any(cmd[:2] in (["buildah", "push"], ["podman", "load"]) for cmd in commands)  # same store: nothing is moved
+
+
+def test_podman_reports_a_missing_image_after_a_buildah_build(ccd, monkeypatch, capsys):
+    _podman(monkeypatch, exists=False)
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+
+    code, _ = ccd("build", toml='[build]\nbackend = "buildah"\n\n[run]\nbackend = "podman"\n')
+
+    assert code == 1 and "not in podman's storage" in capsys.readouterr().out
+
+
+def test_images_lists_an_image_once_when_buildah_and_podman_share_it(ccd, monkeypatch, capsys):
+    import json
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.check_available", lambda self: None)
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+    listing = [{"id": "15388f94c27c", "names": ["localhost/ccd:latest"], "size": "3.7 GB", "createdat": "1 hour ago"}]
+    inspect = [{"Id": "15388f94c27c" + "0" * 52, "RepoTags": ["localhost/ccd:latest"], "Size": 3_700_000_000, "Created": "2026-10-25T19:50:12Z"}]
+
+    def fake_run(cmd, **kwargs):
+        out = json.dumps(listing if cmd[:3] == ["buildah", "images", "--json"] else inspect)
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ccd("images")
+
+    rows = [line.split() for line in capsys.readouterr().out.splitlines()[1:]]
+    assert [(row[0], row[2]) for row in rows if row[0] in ("buildah", "podman")] == [("buildah", "localhost/ccd:latest")]
+
+
+def test_podman_runs_as_container_root_with_the_image_users_home_by_default(ccd, tmp_path, monkeypatch):
+    commands = _podman(monkeypatch)
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "podman")
+
+    run = next(cmd for cmd in commands if cmd[:2] == ["podman", "run"])
+    assert ["--user", "root", "-e", "HOME=/home/user"] == run[run.index("--user") : run.index("--user") + 4]
+    assert run.index("--user") < run.index("-v") < run.index("localhost/ccd")  # run flags, then volumes, then the image
+
+
+def test_podman_user_image_setting_keeps_the_image_user(ccd, tmp_path, monkeypatch):
+    commands = _podman(monkeypatch)
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "podman", toml='[podman]\nuser = "image"\n')
+
+    run = next(cmd for cmd in commands if cmd[:2] == ["podman", "run"])
+    assert "--user" not in run and "HOME=/home/user" not in run
+
+
+def test_podman_attach_uses_the_same_user_as_run(ccd, monkeypatch):
+    commands = _podman(monkeypatch)
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.list_running", lambda self: ["ccd-app-01"])
+
+    ccd("attach", "--backend", "podman")
+
+    exec_cmd = next(cmd for cmd in commands if cmd[:2] == ["podman", "exec"])
+    assert exec_cmd == ["podman", "exec", "-it", "--user", "root", "-e", "HOME=/home/user", "ccd-app-01", "/bin/bash"]
+
+
+def test_docker_user_flags_are_unchanged(ccd, tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    commands = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: commands.append(cmd) or subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "docker")
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "docker", "-u", "root")
+
+    plain, as_root = [cmd for cmd in commands if cmd[:2] == ["docker", "run"]]
+    assert "--user" not in plain and as_root[as_root.index("--user") + 1] == "root" and "HOME=/home/user" not in as_root

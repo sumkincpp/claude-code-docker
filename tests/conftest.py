@@ -60,7 +60,7 @@ class RecordingBackend(plugin.Backend):
         return self.built_id
 
     def images(self, options):
-        return [plugin.ImageInfo(self.name, "image", "ccd", self.built_id, 1_000_000, datetime(2026, 10, 25, 20, 55, tzinfo=timezone.utc))]
+        return [plugin.ImageInfo(self.name, "image", f"{self.name}/ccd", self.built_id, 1_000_000, datetime(2026, 10, 25, 20, 55, tzinfo=timezone.utc))]
 
     def describe_image(self, built_id, options):
         return self.verdict
@@ -97,7 +97,7 @@ def ccd(tmp_path, monkeypatch):
     def unavailable(self):
         raise plugin.BackendError("disabled in tests")
 
-    for real in ("docker.DockerBackend", "buildah.BuildahBackend", "firecracker.FirecrackerBackend"):
+    for real in ("docker.DockerBackend", "buildah.BuildahBackend", "firecracker.FirecrackerBackend", "podman.PodmanBackend"):
         monkeypatch.setattr(f"ccd.backends.{real}.check_available", unavailable)
     # Keep the developer's real ~/.config/ccd/ccd.toml out of the tests
     original = RunConfig.load_effective.__func__

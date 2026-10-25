@@ -107,6 +107,46 @@ Step 3 is skipped when the image id and the ccd VM files are unchanged since the
 
 The first build has a cold cache (no layers, no npm/pnpm cache mounts) and downloads everything. Later builds reuse it.
 
+## Running the image as a container: podman
+
+`buildah` only builds. To run a buildah-built image as a container, use the `podman` backend; podman reads the same
+containers-storage, so nothing is copied:
+
+```bash
+sudo apt install podman
+```
+
+```toml
+[build]
+backend = "buildah"
+
+[run]
+backend = "podman"
+```
+
+```bash
+ccd build      # buildah builds localhost/ccd
+ccd .          # podman run … localhost/ccd (same mounts, limits and -u root as the docker backend); ccd attach works too
+```
+
+`podman` can also build (`[build] backend = "podman"`, same layer cache as buildah) and then run in one backend. Podman as the
+builder for Firecracker (`[run] backend = "firecracker"`) still calls the `buildah` command to pack the rootfs, so install
+both. Run podman and buildah as the same user, or they will not see each other's images.
+
+**Which user runs inside.** Rootless podman maps the image's `user` (uid 1000) to a sub-uid, so host files you own show up inside
+the container as `root`-owned and `user` cannot write to them (for example `~/.claude`, or a mounted `~/.local/share/uv`). In
+rootless podman, container root *is* your host user, so ccd runs the shell as root by default, with `HOME=/home/user` so the
+mounted tool config is found. Files you create in `/app` belong to you on the host, and nothing is re-owned at start. The Docker
+and Firecracker backends do not have this limit and keep using the image's `user`.
+
+To use the image's `user` instead (tools that refuse to run as uid 0; mounts then need a fix such as `--userns=keep-id`, which can
+make the first start slow while podman re-owns the image layers once):
+
+```toml
+[podman]
+user = "image"
+```
+
 ## 5. Where things are
 
 | what | where |

@@ -305,16 +305,18 @@ def show_backends(run_config: RunConfig) -> None:
 def show_images(run_config: RunConfig, only: str | None = None) -> None:
     """Build data of every backend that is ready (build data can sit in several places), or of just `only`."""
     rows = [("BACKEND", "KIND", "NAME", "ID", "SIZE", "CREATED")]
+    seen: set[tuple[str, str]] = set()  # buildah and podman share one store: list each image once
     for name in [only] if only else sorted(available_backends()):
         backend, options, why = try_backend(name, run_config)
         if backend is None:
             if only:
                 print(f"{name}: not ready: {why}")
             continue
-        rows += [
-            (i.backend, i.kind, i.name, short_id(i.id), human_size(i.size) if i.size is not None else "", format_age(i.created) if i.created else "")
-            for i in backend.images(options)
-        ]
+        for i in backend.images(options):
+            if i.id and (i.name, short_id(i.id)) in seen:  # ids come short or full depending on the tool
+                continue
+            seen.add((i.name, short_id(i.id)))
+            rows.append((i.backend, i.kind, i.name, short_id(i.id), human_size(i.size) if i.size is not None else "", format_age(i.created) if i.created else ""))
     if len(rows) == 1:
         print("No build data yet (run 'ccd build')")
     else:

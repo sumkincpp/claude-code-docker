@@ -23,9 +23,18 @@ def volume_args(request: RunRequest) -> list[str]:
 
 class DockerBackend(Backend):
     name = "docker"
+    cli = "docker"  # the command line tool; the podman backend reuses everything with its own
+    image_prefix = ""  # podman needs "localhost/" to address images that are not from a registry
+
+    def image_ref(self, image_name: str) -> str:
+        return f"{self.image_prefix}{image_name}"
+
+    def user_args(self, root: bool, options: dict) -> list[str]:
+        """Flags choosing the user for `run` and `exec`: the image's own user, or root when asked for."""
+        return ["--user", "root"] if root else []
 
     def check_available(self) -> None:
-        if shutil.which("docker") is None:
+        if shutil.which(self.cli) is None:
             raise BackendError("Docker not found. Please ensure Docker is installed and in PATH")
 
     def build(self, request: BuildRequest) -> None:
@@ -33,7 +42,7 @@ class DockerBackend(Backend):
         logger.info("Building Docker image: %s", request.image_name)
 
         docker_args = shlex.join(to_docker_build_args(request.config, request.extra_args))
-        build_command = f"docker build {docker_args} -f Dockerfile -t '{request.image_name}' ."
+        build_command = f"{self.cli} build {docker_args} -f Dockerfile -t {shlex.quote(self.image_ref(request.image_name))} ."
         logger.debug("Build command: %s", build_command)
 
         try:
@@ -49,7 +58,7 @@ class DockerBackend(Backend):
     def run(self, request: RunRequest) -> None:
         """Run the Docker container with specified volumes and resource limits"""
         cmd = [
-            "docker",
+            self.cli,
             "run",
             "-it",
             "--rm",
@@ -68,10 +77,8 @@ class DockerBackend(Backend):
             "seccomp=unconfined",
         ]
 
-        if request.root:
-            cmd.extend(["--user", "root"])
-
-        cmd.extend([*volume_args(request), request.image_name])
+        cmd.extend(self.user_args(request.root, request.options))
+        cmd.extend([*volume_args(request), self.image_ref(request.image_name)])
 
         logger.info("  Full command: %s", " ".join(cmd))
 
@@ -88,11 +95,9 @@ class DockerBackend(Backend):
 
     def attach(self, request: AttachRequest) -> None:
         """Attach to a running Docker container"""
-        cmd = ["docker", "exec", "-it"]
+        cmd = [self.cli, "exec", "-it"]
 
-        if request.root:
-            cmd.extend(["--user", "root"])
-
+        cmd.extend(self.user_args(request.root, request.options))
         cmd.extend([request.name, "/bin/bash"])
 
         try:
@@ -105,12 +110,12 @@ class DockerBackend(Backend):
         return ["docker-daemon"]
 
     def built_image_id(self, request: BuildRequest) -> str:
-        result = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", request.image_name], capture_output=True, text=True, check=False)
+        result = subprocess.run([self.cli, "image", "inspect", "--format", "{{.Id}}", self.image_ref(request.image_name)], capture_output=True, text=True, check=False)
         return result.stdout.strip()
 
     def images(self, options: dict) -> list[ImageInfo]:
         # Unknown images make the exit code non-zero, but the ones that exist are still printed
-        out = subprocess.run(["docker", "image", "inspect", "ccd", "ccd-vm"], capture_output=True, text=True, check=False).stdout
+        out = subprocess.run([self.cli, "image", "inspect", self.image_ref("ccd"), self.image_ref("ccd-vm")], capture_output=True, text=True, check=False).stdout
         try:
             entries = json.loads(out)
         except ValueError:
@@ -121,7 +126,7 @@ class DockerBackend(Backend):
         ]
 
     def list_running(self) -> list[str]:
-        cmd = ["docker", "ps", "--format", "{{.Names}}"]
+        cmd = [self.cli, "ps", "--format", "{{.Names}}"]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         except subprocess.CalledProcessError as e:
