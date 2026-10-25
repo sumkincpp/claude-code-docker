@@ -105,6 +105,9 @@ function formatWaitTime(remainingMs) {
 // onlyBuiltDependencies to be silently ignored in several pnpm 10.x releases.
 function buildWorkspaceYaml(releaseAgeMinutes, ignoreCves, allowedBuilds = [], dangerouslyAllowAllBuilds = false) {
   const lines = ['packages:', '  - "."'];
+  // pnpm 11+ ignores `store-dir` in .npmrc and the PNPM_STORE_DIR variable; storeDir must be set here.
+  // Without it the store lands in ~/.local/share/pnpm and the Docker/buildah cache mount is never used.
+  lines.push(`storeDir: ${JSON.stringify(PNPM_STORE_DIR)}`);
   if (releaseAgeMinutes > 0) {
     lines.push(`minimumReleaseAge: ${releaseAgeMinutes}`);
   }
