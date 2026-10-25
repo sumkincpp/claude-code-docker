@@ -67,6 +67,72 @@ At runtime each binary in `~/.local/bin/` is a small wrapper script pointing int
 - uv (required for Quickstart and development)
 - Host OS: Linux or macOS (Windows via WSL2).
 
+## Backends
+
+CCD builds the image and runs it through pluggable *backends*. Choose them in `ccd.toml`; the Dockerfile stays the single
+definition of the environment.
+
+```toml
+[build]
+backend = "buildah"      # who builds the image   (default: the [run] backend)
+
+[run]
+backend = "podman"       # who runs it            (default: docker)
+```
+
+`ccd build --backend X` overrides the build backend for that command, and `ccd . --backend Y` / `ccd run --backend Y` the run
+backend. `ccd attach` uses the run backend.
+
+| Backend | Builds | Runs | Needs |
+|---|---|---|---|
+| `docker` | yes | yes (container) | Docker |
+| `podman` | yes | yes (container) | podman, rootless setup (`/etc/subuid`) |
+| `buildah` | yes | no | buildah, overlay storage driver ([guide](docs/buildah.md)) |
+| `firecracker` | no (uses another backend's image) | yes (microVM) | `/dev/kvm`, `firecracker`, an NFS server (`exportfs`), `nft`, `sudo` |
+
+### Build backend and run backend together
+
+When the two differ, the image is handed over in the first format the run backend accepts and the build backend offers.
+
+| build \ run | `docker` | `podman` | `firecracker` |
+|---|---|---|---|
+| **`docker`** | same backend | not supported | packed into a rootfs with Docker |
+| **`buildah`** | not supported | works: same image store, nothing is copied | packed into a rootfs with buildah |
+| **`podman`** | not supported | same backend | packed into a rootfs with the `buildah` command (install it too) |
+
+An unsupported pair stops with an error that names both backends and the formats each one offers and accepts. Formats:
+`docker-daemon` (Docker's image store) and `containers-storage` (the store shared by buildah and podman).
+
+### Where the data lives
+
+| Backend | Location |
+|---|---|
+| `docker` | Docker's own image store |
+| `buildah`, `podman` | containers-storage, `~/.local/share/containers/storage` (shared by both) |
+| `firecracker` | `~/.cache/ccd/firecracker/`: `rootfs.squashfs` (read-only, shared by all VMs), `rootfs.image-id` (which image it was packed from), `vmlinux`, and `vms/<name>/` per running VM |
+
+The Firecracker rootfs is packed once by `ccd build` and reused until the source image or the ccd VM files change.
+
+### Which user runs inside
+
+| Backend | Default user | Why |
+|---|---|---|
+| `docker` | the image's `user` | the daemon keeps host uids, so mounts stay writable |
+| `podman` | container root, with `HOME=/home/user` | in rootless podman container root is your host user, so mounts are writable; `[podman] user = "image"` uses the image's user |
+| `firecracker` | `user`; `-u root` for root | host directories arrive over NFS with your uid mapped |
+
+### Inspecting the state
+
+```bash
+ccd backends          # backends, whether each builds and/or runs, and whether it is ready
+ccd images            # build data of every ready backend (images, rootfs, kernel), a shared image listed once
+ccd status            # configured pair, the built image, and whether the run backend's copy is current
+ccd prune             # dry run; leftovers of dead Firecracker VMs (taps, NFS exports, firewall rules, state dirs)
+ccd prune --no-dry-run
+```
+
+See [docs/buildah.md](docs/buildah.md) for installing and configuring buildah and podman.
+
 ## CLI Reference
 
 ### Build Image (ccd build)
