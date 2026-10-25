@@ -90,7 +90,7 @@ def test_unknown_backend_fails_cleanly(ccd, tmp_path, capsys):
     code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "nope")
 
     assert code == 1 and calls == []
-    assert "nope" in capsys.readouterr().out
+    assert "nope" in capsys.readouterr().err
 
 
 def test_backends_command_lists_shipped_plugins(ccd, capsys):
@@ -188,7 +188,7 @@ def test_firecracker_run_refuses_a_rootfs_without_build_stamp(ccd, tmp_path, mon
 
     code, _ = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", toml=toml)
 
-    assert code == 1 and "run 'ccd build'" in capsys.readouterr().out
+    assert code == 1 and "run 'ccd build'" in capsys.readouterr().err
 
 
 def test_firecracker_run_fails_without_dns_and_leaves_no_vm_state(ccd, tmp_path, monkeypatch, capsys):
@@ -202,7 +202,7 @@ def test_firecracker_run_fails_without_dns_and_leaves_no_vm_state(ccd, tmp_path,
 
     code, _ = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", toml=toml)
 
-    assert code == 1 and "No usable IPv4 DNS server" in capsys.readouterr().out
+    assert code == 1 and "No usable IPv4 DNS server" in capsys.readouterr().err
     assert not (cache / "vms").exists()
 
 
@@ -214,7 +214,7 @@ def test_firecracker_build_without_a_kernel_fails(ccd, tmp_path, monkeypatch, ca
 
     code, calls = ccd("build", toml='[build]\nbackend = "fake-docker"\n\n[run]\nbackend = "firecracker"\n' + toml)
 
-    assert code == 1 and "No guest kernel" in capsys.readouterr().out
+    assert code == 1 and "No guest kernel" in capsys.readouterr().err
 
 
 def test_firecracker_refuses_images_in_formats_it_cannot_import(ccd, tmp_path, monkeypatch, capsys):
@@ -222,7 +222,7 @@ def test_firecracker_refuses_images_in_formats_it_cannot_import(ccd, tmp_path, m
 
     code, _ = ccd("build", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "firecracker"\n' + toml)
 
-    assert code == 1 and "cannot run images built by 'fake-build'" in capsys.readouterr().out
+    assert code == 1 and "cannot run images built by 'fake-build'" in capsys.readouterr().err
 
 
 def test_hand_over_uses_the_runners_first_choice_among_what_the_builder_offers(ccd, monkeypatch):
@@ -243,7 +243,7 @@ def test_hand_over_without_a_common_format_names_both_backends(ccd, monkeypatch,
 
     code, calls = ccd("build", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n')
 
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert code == 1 and [op for _, op, _ in calls] == ["build"]
     assert "fake-build offers: fake-native" in out and "fake-run accepts: something-else" in out
 
@@ -487,7 +487,7 @@ def test_firecracker_run_logs_which_image_the_rootfs_was_built_from(ccd, tmp_pat
 
     code, _ = ccd("-v", "run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", toml=toml + 'dns = ["1.1.1.1"]\n')
 
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert code == 0
     assert f"Rootfs: {cache / 'rootfs.squashfs'} (image abc, built just now)" in out
     assert f"Kernel: {cache / 'vmlinux'}" in out
@@ -550,7 +550,7 @@ def test_podman_reports_a_missing_image_after_a_buildah_build(ccd, monkeypatch, 
 
     code, _ = ccd("build", toml='[build]\nbackend = "buildah"\n\n[run]\nbackend = "podman"\n')
 
-    assert code == 1 and "not in podman's storage" in capsys.readouterr().out
+    assert code == 1 and "not in podman's storage" in capsys.readouterr().err
 
 
 def test_images_lists_an_image_once_when_buildah_and_podman_share_it(ccd, monkeypatch, capsys):

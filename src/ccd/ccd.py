@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 def setup_logging(verbosity: int) -> None:
     """Configure logging based on verbosity level"""
     # Set up console handler
-    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler = logging.StreamHandler(sys.stderr)  # logs never mix into a one-off command's stdout
 
     if verbosity == 0:
         log_level = logging.WARNING
