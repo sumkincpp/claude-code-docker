@@ -50,6 +50,12 @@ Exclude `rust` with `--without rust` to keep the image smaller.
 - `pi` - Pi Coding Agent CLI
 - `jules` - Jules CLI (disabled by default)
 
+### CLI Isolation
+
+Each pnpm CLI tool is installed into its own directory under `~/.local/share/ccd/pnpm-installs/<name>/`.
+
+At runtime each binary in `~/.local/bin/` is a small wrapper script pointing into its own install directory.
+
 ### Runtimes
 
 - `rust` - Rust toolchain via rustup
@@ -93,7 +99,7 @@ ccd build --without opencode,copilot
 ccd -vv build --no-cache
 ```
 
-With that an image named `claude-code:latest` is built.
+With that an image named `ccd:latest` is built.
 
 ### Version Pinning and Release-Age Policy
 
@@ -118,11 +124,13 @@ ccd build --claude-version 2.1.117
 ccd build --npm-min-release-age-days 0
 ccd build --npm-audit-ignore-components pi
 ccd build --npm-audit-force-fix-components pi
+ccd build --no-cooldown pi
 ```
 
 - CCD resolves and installs each npm CLI, then runs signature audit.
 - npm audit failures fail the build.
-- Use ignore or force-fix flags per component `--npm-audit-ignore-components`/`--npm-audit-force-fix-components` to ignore/force fix component
+- Use ignore or force-fix flags per component `--npm-audit-ignore-components`/`--npm-audit-force-fix-components` to ignore/force fix component.
+- Use `--no-cooldown <component>` to bypass the release-age gate for a specific component (e.g. when a patched version was just released).
 - Resolution metadata is saved under /metadata/
 
 #### Other runtimes (uv, Rust, nvm)
