@@ -153,6 +153,6 @@ An interrupted build can leave an incomplete layer; buildah prints `Found incomp
   `vfs` slowness above. Report problems with the failing command's output.
 - Not every BuildKit feature works on older packaged buildah versions. `RUN --mount=type=cache,…` worked on a Raspberry Pi OS
   buildah (the build got through all npm/pnpm steps), but heredocs (`RUN cat <<'EOF'`) did not, so the Dockerfile copies
-  `scripts/ccd-entrypoint` instead of writing it with a heredoc.
+  `docker/ccd-entrypoint` instead of writing it with a heredoc.
 - A cold build on a Raspberry Pi with the `overlay` driver took about 50 minutes to reach step 56 of 77.
 - `buildah` only builds. Running needs another backend: `[run] backend = "firecracker"`.

@@ -212,29 +212,7 @@ WORKDIR /app
 
 USER root
 # Entrypoint to initialize /app environment
-RUN cat <<'EOF' >/usr/local/bin/ccd-entrypoint
-#!/usr/bin/env bash
-set -e
-
-export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/app/.venv2}"
-export CCD_APP_DIR="${CCD_APP_DIR:-/app}"
-
-init_file=""
-if [ -n "${CCD_INIT_FILE:-}" ]; then
-  init_file="${CCD_INIT_FILE}"
-elif [ -f /app/.ccd_env ]; then
-  init_file="/app/.ccd_env"
-elif [ -f /app/.ccd-init.sh ]; then
-  init_file="/app/.ccd-init.sh"
-fi
-
-if [ -n "${init_file}" ]; then
-  # shellcheck source=/dev/null
-  . "${init_file}"
-fi
-
-exec "$@"
-EOF
+COPY docker/ccd-entrypoint /usr/local/bin/ccd-entrypoint
 RUN chmod +x /usr/local/bin/ccd-entrypoint
 USER user
 
