@@ -174,8 +174,9 @@ class FirecrackerBackend(Backend):
             raise BackendError(f"No rootfs in {cache}; run 'ccd build' first")
         stamp = cache / "rootfs.image-id"
         if not stamp.exists() or not stamp.read_text().endswith(f":{assets_hash()}"):
-            # Booting it would not fail clearly: an older init ignores newer boot arguments and simply behaves differently
-            raise BackendError("The VM rootfs is missing its build stamp or was built from older ccd VM files (init/agent changed); run 'ccd build' first")
+            # Not fatal: the rootfs usually still boots, but an older init or agent may ignore newer features (one-off commands
+            # need the current agent), so say so and let the user decide when to rebuild
+            logger.warning("The VM rootfs has no build stamp or was built from older ccd VM files (init/agent changed); run 'ccd build' to update it")
         kernel = cache / "vmlinux"
         if not kernel.exists():
             raise BackendError(f"{kernel} not found; run 'ccd build' first")

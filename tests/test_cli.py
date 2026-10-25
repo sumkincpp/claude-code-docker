@@ -182,13 +182,30 @@ def _firecracker_cache(tmp_path, monkeypatch, stamp=True, kernel=True):
     return cache, f'[firecracker]\ncache_dir = "{cache}"\nuplink = "eth0"\n'
 
 
-def test_firecracker_run_refuses_a_rootfs_without_build_stamp(ccd, tmp_path, monkeypatch, capsys):
+def test_firecracker_run_warns_about_a_stale_rootfs_and_still_starts(ccd, tmp_path, monkeypatch, capsys):
+    from ccd.backends import firecracker as fc
+
     cache, toml = _firecracker_cache(tmp_path, monkeypatch, stamp=False)
+    monkeypatch.setattr(fc.hostnet, "setup", lambda net: None)
+    monkeypatch.setattr(fc.hostnet, "teardown", lambda net: None)
+    monkeypatch.setattr(fc.hostnet, "host_networks", lambda: [])
+    monkeypatch.setattr(fc.microvm, "make_upper", lambda path, size: path.write_bytes(b""))
+    started = []
+    monkeypatch.setattr(fc.FirecrackerBackend, "_run_agent_session", staticmethod(lambda *args: started.append(args) or 0))
     (tmp_path / "app").mkdir()
 
-    code, _ = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", toml=toml)
+    for stamp in (None, "sha256:abc:0000000000000000"):  # no stamp at all, then a stamp from other ccd VM files
+        started.clear()
+        capsys.readouterr()
+        if stamp:
+            (cache / "rootfs.image-id").write_text(stamp)
 
-    assert code == 1 and "run 'ccd build'" in capsys.readouterr().err
+        code, _ = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", toml=toml + 'dns = ["1.1.1.1"]\n')
+
+        err = capsys.readouterr().err
+        assert code == 0 and len(started) == 1  # it still starts
+        assert "older ccd VM files" in err and "run 'ccd build' to update" in err
+
 
 
 def test_firecracker_run_fails_without_dns_and_leaves_no_vm_state(ccd, tmp_path, monkeypatch, capsys):
