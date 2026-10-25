@@ -17,6 +17,7 @@ const AUDIT_IGNORE_CVES = (process.env.PNPM_AUDIT_IGNORE_CVES ?? "").split(",").
 const AUDIT_FORCE_FIX_COMPONENTS = (process.env.PNPM_AUDIT_FORCE_FIX_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
 const MIN_RELEASE_AGE_IGNORE_COMPONENTS = (process.env.PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
 const BIN_DIR = path.join(os.homedir(), ".local/bin");
+const PNPM_STORE_DIR = process.env.PNPM_STORE_DIR ?? path.join(os.homedir(), ".pnpm-store");
 const NOW = Date.now();
 // When set, only install this one component (used for per-layer Docker caching).
 const INSTALL_COMPONENT = process.env.INSTALL_COMPONENT ?? null;
@@ -188,7 +189,7 @@ async function installCli({ component, package: packageName, version: versionSpe
   fs.writeFileSync(path.join(installDir, "package.json"), JSON.stringify(pkgJson, null, 2) + "\n");
   // Large platform-specific binaries (e.g. claude-code-linux-x64) can exceed pnpm's
   // default 60s fetch timeout — set a generous limit per install directory.
-  fs.writeFileSync(path.join(installDir, ".npmrc"), "fetch-timeout=600000\n");
+  fs.writeFileSync(path.join(installDir, ".npmrc"), `fetch-timeout=600000\nstore-dir=${PNPM_STORE_DIR}\n`);
 
   const releaseAgeMinutes = MIN_RELEASE_AGE_IGNORE_COMPONENTS.includes(component) ? 0 : RELEASE_AGE_MINUTES;
   if (releaseAgeMinutes === 0 && RELEASE_AGE_MINUTES > 0) {
