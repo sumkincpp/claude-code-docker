@@ -17,7 +17,7 @@ except ImportError:
         tomllib = None  # type: ignore[assignment]
 
 IMAGE_NAME = "ccd"
-IMAGE_HOME_FOLDER = "/home/ubuntu"
+IMAGE_HOME_FOLDER = "/home/user"
 # ccdXX
 CONTAINER_NAME_BASE = "ccd"
 CONFIG_FILE_NAME = "ccd.toml"
@@ -549,7 +549,7 @@ def run_container(params: RunParameters):
     logger.info("  Home folder: %s", home_path)
     logger.info("  Memory limit: %s", params.memory)
     logger.info("  CPU limit: %s", params.cpus)
-    logger.info("  User: %s", "root" if params.root else "ubuntu")
+    logger.info("  User: %s", "root" if params.root else "user")
     logger.info("  Full command: %s", " ".join(cmd))
 
     try:
@@ -602,7 +602,7 @@ def add_container_args(parser: argparse.ArgumentParser, home_folder: Path) -> ar
     parser.add_argument("--home", default=home_folder, help=f"Home folder path (default: ${home_folder})")
     parser.add_argument("--memory", default="1g", help="Memory limit for the container (default: 1g)")
     parser.add_argument("--cpus", default="2", help="Number of CPUs for the container (default: 2)")
-    parser.add_argument("--root", action="store_true", help="Run container as root user instead of default ubuntu user")
+    parser.add_argument("--root", action="store_true", help="Run container as root user instead of default user")
     return parser
 
 
