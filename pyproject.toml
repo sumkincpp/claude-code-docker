@@ -25,3 +25,12 @@ line-length=160
 
 [tool.uv]
 exclude-newer = "1 week"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
