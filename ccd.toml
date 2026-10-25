@@ -1,6 +1,6 @@
 [build]
 # Minimum release age in days for npm packages resolved by tag (e.g. latest)
-npm_min_release_age_days = 7
+npm_min_release_age_days = 2
 
 # Components exempt from the minimum release age check
 npm_min_release_age_ignore_components = []
@@ -9,7 +9,7 @@ npm_min_release_age_ignore_components = []
 # npm_audit_ignore_components = []
 
 # Components that run 'npm audit fix --force' before audit checks
-npm_audit_force_fix_components = ["pi"]
+npm_audit_force_fix_components = []
 
 # Include only these features (mutually exclusive with without_features)
 # with_features = ["claude", "codex", "gemini", "opencode", "copilot", "jules", "pi", "rust"]
