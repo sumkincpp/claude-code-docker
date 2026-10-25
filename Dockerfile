@@ -41,7 +41,7 @@ ARG NPM_VERSION=latest
 ARG PNPM_VERSION=latest
 ARG NPM_CLI_MIN_RELEASE_AGE_DAYS=7
 ARG NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS=
-ARG NPM_AUDIT_IGNORE_COMPONENTS=
+ARG PNPM_AUDIT_IGNORE_CVES=
 ARG NPM_AUDIT_FORCE_FIX_COMPONENTS=
 ARG UV_VERSION=latest
 ARG RUSTUP_VERSION=latest
@@ -56,13 +56,20 @@ RUN if [ "$NVM_VERSION" = "latest" ]; then \
     && echo "Installing nvm version ${NVM_VERSION}"  \
     && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v${NVM_VERSION}/install.sh | bash
 
-ARG CLAUDE_VERSION=latest
-ARG CODEX_VERSION=latest
-ARG GEMINI_VERSION=latest
-ARG JULES_VERSION=latest
-ARG OPENCODE_VERSION=latest
-ARG COPILOT_VERSION=latest
-ARG PI_VERSION=latest
+ENV NVM_DIR="/home/user/.nvm"
+ENV PNPM_CLI_INSTALL_ROOT="/home/user/.local/share/ccd/pnpm-installs"
+ENV PNPM_CLI_METADATA_ROOT="/metadata"
+
+# Install node — no scripts needed yet, this layer is only busted by NVM_NODE_VERSION changes
+# https://github.com/google-gemini/gemini-cli
+# https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started
+# https://github.com/github/copilot-cli?locale=en-US
+RUN . $NVM_DIR/nvm.sh && \
+    NVM_NODEJS_ORG_MIRROR=https://unofficial-builds.nodejs.org/download/release \
+    nvm install ${NVM_NODE_VERSION}
+
+# Scripts depend on node — copy after node is installed so script changes don't bust node layer
+COPY --chown=user:user scripts/. /home/user/.local/bin/.
 
 # Optional build features (set --build-arg WITH_*=0 to disable)
 ARG WITH_RUST=1
@@ -76,29 +83,92 @@ ARG WITH_PI=1
 # Disabled features by default
 ARG WITH_JULES=0
 
-COPY --chown=user:user scripts/. /home/user/.local/bin/.
-
-ENV NVM_DIR="/home/user/.nvm"
-ENV NPM_CLI_INSTALL_ROOT="/home/user/.local/share/ccd/npm-installs"
-ENV NPM_CLI_METADATA_ROOT="/metadata"
-# https://github.com/google-gemini/gemini-cli
-# https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started
-# https://github.com/github/copilot-cli?locale=en-US
 RUN . $NVM_DIR/nvm.sh && \
-    NVM_NODEJS_ORG_MIRROR=https://unofficial-builds.nodejs.org/download/release \
-    nvm install ${NVM_NODE_VERSION} && \
     NPM_RESOLVED=$(node /home/user/.local/bin/resolve-version.mjs npm ${NPM_VERSION} ${NPM_CLI_MIN_RELEASE_AGE_DAYS}) && \
     npm install -g npm@${NPM_RESOLVED} && \
     PNPM_RESOLVED=$(node /home/user/.local/bin/resolve-version.mjs pnpm ${PNPM_VERSION} ${NPM_CLI_MIN_RELEASE_AGE_DAYS}) && \
     corepack enable && \
     corepack prepare "pnpm@${PNPM_RESOLVED}" --activate
 
-RUN PNPM_CLI_MIN_RELEASE_AGE_DAYS="${NPM_CLI_MIN_RELEASE_AGE_DAYS}" \
+# Each CLI gets its own layer — only the changed component's ARG invalidates its layer.
+ARG CLAUDE_VERSION=latest
+RUN INSTALL_COMPONENT=claude \
+    WITH_CLAUDE="${WITH_CLAUDE}" \
+    CLAUDE_VERSION="${CLAUDE_VERSION}" \
+    PNPM_CLI_MIN_RELEASE_AGE_DAYS="${NPM_CLI_MIN_RELEASE_AGE_DAYS}" \
     PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS="${NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS}" \
+    PNPM_AUDIT_IGNORE_CVES="${PNPM_AUDIT_IGNORE_CVES}" \
     PNPM_AUDIT_FORCE_FIX_COMPONENTS="${NPM_AUDIT_FORCE_FIX_COMPONENTS}" \
     NODE_USE_ENV_PROXY=1 \
-    node /home/user/.local/bin/install-clis.mjs && \
-    ln -sf /home/user/.nvm/versions/node/v${NVM_NODE_VERSION}/bin/* /home/user/.local/bin/
+    node /home/user/.local/bin/install-clis.mjs
+
+ARG CODEX_VERSION=latest
+RUN INSTALL_COMPONENT=codex \
+    WITH_CODEX="${WITH_CODEX}" \
+    CODEX_VERSION="${CODEX_VERSION}" \
+    PNPM_CLI_MIN_RELEASE_AGE_DAYS="${NPM_CLI_MIN_RELEASE_AGE_DAYS}" \
+    PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS="${NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS}" \
+    PNPM_AUDIT_IGNORE_CVES="${PNPM_AUDIT_IGNORE_CVES}" \
+    PNPM_AUDIT_FORCE_FIX_COMPONENTS="${NPM_AUDIT_FORCE_FIX_COMPONENTS}" \
+    NODE_USE_ENV_PROXY=1 \
+    node /home/user/.local/bin/install-clis.mjs
+
+ARG GEMINI_VERSION=latest
+RUN INSTALL_COMPONENT=gemini \
+    WITH_GEMINI="${WITH_GEMINI}" \
+    GEMINI_VERSION="${GEMINI_VERSION}" \
+    PNPM_CLI_MIN_RELEASE_AGE_DAYS="${NPM_CLI_MIN_RELEASE_AGE_DAYS}" \
+    PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS="${NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS}" \
+    PNPM_AUDIT_IGNORE_CVES="${PNPM_AUDIT_IGNORE_CVES}" \
+    PNPM_AUDIT_FORCE_FIX_COMPONENTS="${NPM_AUDIT_FORCE_FIX_COMPONENTS}" \
+    NODE_USE_ENV_PROXY=1 \
+    node /home/user/.local/bin/install-clis.mjs
+
+ARG JULES_VERSION=latest
+RUN INSTALL_COMPONENT=jules \
+    WITH_JULES="${WITH_JULES}" \
+    JULES_VERSION="${JULES_VERSION}" \
+    PNPM_CLI_MIN_RELEASE_AGE_DAYS="${NPM_CLI_MIN_RELEASE_AGE_DAYS}" \
+    PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS="${NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS}" \
+    PNPM_AUDIT_IGNORE_CVES="${PNPM_AUDIT_IGNORE_CVES}" \
+    PNPM_AUDIT_FORCE_FIX_COMPONENTS="${NPM_AUDIT_FORCE_FIX_COMPONENTS}" \
+    NODE_USE_ENV_PROXY=1 \
+    node /home/user/.local/bin/install-clis.mjs
+
+ARG OPENCODE_VERSION=latest
+RUN INSTALL_COMPONENT=opencode \
+    WITH_OPENCODE="${WITH_OPENCODE}" \
+    OPENCODE_VERSION="${OPENCODE_VERSION}" \
+    PNPM_CLI_MIN_RELEASE_AGE_DAYS="${NPM_CLI_MIN_RELEASE_AGE_DAYS}" \
+    PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS="${NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS}" \
+    PNPM_AUDIT_IGNORE_CVES="${PNPM_AUDIT_IGNORE_CVES}" \
+    PNPM_AUDIT_FORCE_FIX_COMPONENTS="${NPM_AUDIT_FORCE_FIX_COMPONENTS}" \
+    NODE_USE_ENV_PROXY=1 \
+    node /home/user/.local/bin/install-clis.mjs
+
+ARG COPILOT_VERSION=latest
+RUN INSTALL_COMPONENT=copilot \
+    WITH_COPILOT="${WITH_COPILOT}" \
+    COPILOT_VERSION="${COPILOT_VERSION}" \
+    PNPM_CLI_MIN_RELEASE_AGE_DAYS="${NPM_CLI_MIN_RELEASE_AGE_DAYS}" \
+    PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS="${NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS}" \
+    PNPM_AUDIT_IGNORE_CVES="${PNPM_AUDIT_IGNORE_CVES}" \
+    PNPM_AUDIT_FORCE_FIX_COMPONENTS="${NPM_AUDIT_FORCE_FIX_COMPONENTS}" \
+    NODE_USE_ENV_PROXY=1 \
+    node /home/user/.local/bin/install-clis.mjs
+
+ARG PI_VERSION=latest
+RUN INSTALL_COMPONENT=pi \
+    WITH_PI="${WITH_PI}" \
+    PI_VERSION="${PI_VERSION}" \
+    PNPM_CLI_MIN_RELEASE_AGE_DAYS="${NPM_CLI_MIN_RELEASE_AGE_DAYS}" \
+    PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS="${NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS}" \
+    PNPM_AUDIT_IGNORE_CVES="${PNPM_AUDIT_IGNORE_CVES}" \
+    PNPM_AUDIT_FORCE_FIX_COMPONENTS="${NPM_AUDIT_FORCE_FIX_COMPONENTS}" \
+    NODE_USE_ENV_PROXY=1 \
+    node /home/user/.local/bin/install-clis.mjs
+
+RUN ln -sf /home/user/.nvm/versions/node/v${NVM_NODE_VERSION}/bin/* /home/user/.local/bin/
 
 # Install Rust toolchain only when requested
 RUN if [ "${WITH_RUST}" = "1" ]; then \

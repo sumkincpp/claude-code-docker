@@ -12,13 +12,16 @@ const JSONL_FILE = path.join(METADATA_ROOT, "pnpm-cli-resolution.jsonl");
 const RELEASE_AGE_DAYS = parseInt(process.env.PNPM_CLI_MIN_RELEASE_AGE_DAYS ?? "7", 10);
 const RELEASE_AGE_MINUTES = RELEASE_AGE_DAYS * 24 * 60;
 const PNPM_VERSION = execSync("pnpm --version", { encoding: "utf8" }).trim();
+const PNPM_MAJOR = parseInt(PNPM_VERSION.split(".")[0], 10);
 const AUDIT_IGNORE_CVES = (process.env.PNPM_AUDIT_IGNORE_CVES ?? "").split(",").map(s => s.trim()).filter(Boolean);
 const AUDIT_FORCE_FIX_COMPONENTS = (process.env.PNPM_AUDIT_FORCE_FIX_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
 const MIN_RELEASE_AGE_IGNORE_COMPONENTS = (process.env.PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
 const BIN_DIR = path.join(os.homedir(), ".local/bin");
 const NOW = Date.now();
+// When set, only install this one component (used for per-layer Docker caching).
+const INSTALL_COMPONENT = process.env.INSTALL_COMPONENT ?? null;
 
-const COMPONENTS = [
+const ALL_COMPONENTS = [
   { component: "claude",    package: "@anthropic-ai/claude-code",        version: process.env.CLAUDE_VERSION    ?? "latest", binary: "claude",    enabled: process.env.WITH_CLAUDE    !== "0", builtDependency: true  },
   { component: "codex",     package: "@openai/codex",                    version: process.env.CODEX_VERSION     ?? "latest", binary: "codex",     enabled: process.env.WITH_CODEX     !== "0", builtDependency: false },
   { component: "gemini",    package: "@google/gemini-cli",               version: process.env.GEMINI_VERSION    ?? "latest", binary: "gemini",    enabled: process.env.WITH_GEMINI    !== "0", builtDependency: false },
@@ -28,6 +31,15 @@ const COMPONENTS = [
   { component: "pi",        package: "@mariozechner/pi-coding-agent",    version: process.env.PI_VERSION        ?? "latest", binary: "pi",        enabled: process.env.WITH_PI        !== "0", builtDependency: false },
 ];
 
+if (INSTALL_COMPONENT !== null && !ALL_COMPONENTS.some(c => c.component === INSTALL_COMPONENT)) {
+  console.error(`Unknown INSTALL_COMPONENT: "${INSTALL_COMPONENT}". Valid values: ${ALL_COMPONENTS.map(c => c.component).join(", ")}`);
+  process.exit(1);
+}
+
+const COMPONENTS = INSTALL_COMPONENT !== null
+  ? ALL_COMPONENTS.filter(c => c.component === INSTALL_COMPONENT)
+  : ALL_COMPONENTS;
+
 if (isNaN(RELEASE_AGE_DAYS) || RELEASE_AGE_DAYS < 0) {
   console.error("PNPM_CLI_MIN_RELEASE_AGE_DAYS must be a non-negative integer");
   process.exit(1);
@@ -36,8 +48,12 @@ if (isNaN(RELEASE_AGE_DAYS) || RELEASE_AGE_DAYS < 0) {
 fs.mkdirSync(BIN_DIR, { recursive: true });
 fs.mkdirSync(INSTALL_ROOT, { recursive: true });
 fs.mkdirSync(METADATA_ROOT, { recursive: true });
-fs.writeFileSync(SUMMARY_FILE, "");
-fs.writeFileSync(JSONL_FILE, "");
+// Use append when running per-component (multiple RUN layers each write their slice).
+// Use truncate for a full install run so the file starts clean.
+if (INSTALL_COMPONENT === null) {
+  fs.writeFileSync(SUMMARY_FILE, "");
+  fs.writeFileSync(JSONL_FILE, "");
+}
 
 if (RELEASE_AGE_DAYS > 0) {
   console.log(`Applying release-age policy: ${RELEASE_AGE_DAYS} days (${RELEASE_AGE_MINUTES} minutes) via pnpm minimumReleaseAge`);
@@ -77,16 +93,28 @@ function formatWaitTime(remainingMs) {
   return `${minutes}m`;
 }
 
-function buildWorkspaceYaml(releaseAgeMinutes, ignoreCves, onlyBuiltDependencies = []) {
-  const lines = ["packages: []"];
+// packages: ["."] declares the install directory as the workspace root so that
+// workspace-level settings (minimumReleaseAge, allowBuilds) apply to its dependencies.
+// packages: [] (explicitly empty) is ambiguous across pnpm versions and caused
+// onlyBuiltDependencies to be silently ignored in several pnpm 10.x releases.
+function buildWorkspaceYaml(releaseAgeMinutes, ignoreCves, allowedBuilds = []) {
+  const lines = ['packages:', '  - "."'];
   if (releaseAgeMinutes > 0) {
     lines.push(`minimumReleaseAge: ${releaseAgeMinutes}`);
   }
-  // pnpm 11 requires onlyBuiltDependencies in pnpm-workspace.yaml, not just package.json
-  if (onlyBuiltDependencies.length > 0) {
-    lines.push("onlyBuiltDependencies:");
-    for (const dep of onlyBuiltDependencies) {
-      lines.push(`  - "${dep}"`);
+  if (allowedBuilds.length > 0) {
+    if (PNPM_MAJOR >= 11) {
+      // pnpm 11+: onlyBuiltDependencies renamed to allowBuilds (boolean map)
+      lines.push("allowBuilds:");
+      for (const pkg of allowedBuilds) {
+        lines.push(`  "${pkg}": true`);
+      }
+    } else {
+      // pnpm 9/10: allowlist via onlyBuiltDependencies array
+      lines.push("onlyBuiltDependencies:");
+      for (const pkg of allowedBuilds) {
+        lines.push(`  - "${pkg}"`);
+      }
     }
   }
   if (ignoreCves.length > 0) {
@@ -121,6 +149,24 @@ async function installCli({ component, package: packageName, version: versionSpe
   fs.rmSync(installDir, { recursive: true, force: true });
   fs.mkdirSync(installDir, { recursive: true });
 
+  // pnpm v9+ skips lifecycle scripts by default (supply-chain hardening).
+  // For packages that ship a platform-native binary via a postinstall script, we must
+  // allowlist both the top-level package AND its optional native-binary dependencies
+  // (e.g. @anthropic-ai/claude-code-linux-arm64-musl), since those also run postinstall.
+  // We fetch registry metadata first to read the exact optionalDependencies of the
+  // resolved version — this works for any naming convention, not just <pkg>-<os>-<arch>.
+  let registryData = null;
+  let allowedBuilds = [];
+
+  if (builtDependency) {
+    registryData = await fetchRegistryData(packageName);
+    const cooldownDays = MIN_RELEASE_AGE_IGNORE_COMPONENTS.includes(component) ? 0 : RELEASE_AGE_DAYS;
+    const resolvedSpec = resolveVersion(registryData, versionSpec, cooldownDays) ?? versionSpec;
+    const optionalDeps = Object.keys(registryData.versions?.[resolvedSpec]?.optionalDependencies ?? {});
+    allowedBuilds = [packageName, ...optionalDeps];
+    console.log(`[${component}] allowedBuilds (for logging): ${allowedBuilds.join(", ")}`);
+  }
+
   const pkgJson = {
     name: `ccd-pnpm-cli-${component}`,
     private: true,
@@ -130,12 +176,6 @@ async function installCli({ component, package: packageName, version: versionSpe
     // onlyBuiltDependencies is set — pnpm install respects it correctly.
     dependencies: { [packageName]: versionSpec },
   };
-  // pnpm v9+ skips lifecycle scripts by default (supply-chain hardening).
-  // Packages that download a platform-native binary in their postinstall must be
-  // explicitly allowlisted via onlyBuiltDependencies or the binary is never placed.
-  if (builtDependency) {
-    pkgJson.pnpm = { onlyBuiltDependencies: [packageName] };
-  }
   fs.writeFileSync(path.join(installDir, "package.json"), JSON.stringify(pkgJson, null, 2) + "\n");
   // Large platform-specific binaries (e.g. claude-code-linux-x64) can exceed pnpm's
   // default 60s fetch timeout — set a generous limit per install directory.
@@ -147,7 +187,7 @@ async function installCli({ component, package: packageName, version: versionSpe
   }
   fs.writeFileSync(
     path.join(installDir, "pnpm-workspace.yaml"),
-    buildWorkspaceYaml(releaseAgeMinutes, AUDIT_IGNORE_CVES, builtDependency ? [packageName] : [])
+    buildWorkspaceYaml(releaseAgeMinutes, AUDIT_IGNORE_CVES, allowedBuilds)
   );
 
   run("pnpm install", installDir);
@@ -166,7 +206,8 @@ async function installCli({ component, package: packageName, version: versionSpe
     );
   }
 
-  const registryData = await fetchRegistryData(packageName);
+  // Reuse registry data fetched before install; fetch now for non-builtDependency packages.
+  if (!registryData) registryData = await fetchRegistryData(packageName);
   const times = registryData.time ?? {};
   const latestVersion = registryData["dist-tags"]?.latest ?? null;
   const latestPublishTime = latestVersion ? (times[latestVersion] ?? null) : null;
