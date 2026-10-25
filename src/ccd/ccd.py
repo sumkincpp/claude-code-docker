@@ -1,52 +1,35 @@
 #!/usr/bin/env python3
 import argparse
 import logging
-import shlex
-import subprocess
 import sys
-from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import List, Literal, Set
+from typing import List
 
-try:
-    import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib  # type: ignore[no-redef]
-    except ImportError:
-        tomllib = None  # type: ignore[assignment]
-
-IMAGE_NAME = "ccd"
-IMAGE_HOME_FOLDER = "/home/user"
-# ccdXX
-CONTAINER_NAME_BASE = "ccd"
-CONFIG_FILE_NAME = "ccd.toml"
-GLOBAL_CONFIG_PATH = Path.home() / ".config" / "ccd" / "ccd.toml"
-
-FEATURE_BUILD_ARGS = {
-    "rust": "WITH_RUST",
-    "claude": "WITH_CLAUDE",
-    "codex": "WITH_CODEX",
-    "gemini": "WITH_GEMINI",
-    "opencode": "WITH_OPENCODE",
-    "copilot": "WITH_COPILOT",
-    "jules": "WITH_JULES",
-    "pi": "WITH_PI",
-}
-VERSION_BUILD_ARGS = {
-    "nvm": "NVM_VERSION",
-    "node": "NVM_NODE_VERSION",
-    "npm": "NPM_VERSION",
-    "uv": "UV_VERSION",
-    "rustup": "RUSTUP_VERSION",
-    "claude": "CLAUDE_VERSION",
-    "codex": "CODEX_VERSION",
-    "gemini": "GEMINI_VERSION",
-    "opencode": "OPENCODE_VERSION",
-    "copilot": "COPILOT_VERSION",
-    "jules": "JULES_VERSION",
-    "pi": "PI_VERSION",
-}
+from ccd.config import (
+    CONFIG_FILE_NAME,
+    CONTAINER_NAME_BASE,
+    DEFAULT_BACKEND,
+    IMAGE_HOME_FOLDER,
+    IMAGE_NAME,
+    IMAGE_STORE,
+    VERSION_BUILD_ARGS,
+    BuildConfig,
+    PathSpec,
+    RunConfig,
+    RunParameters,
+)
+from ccd.plugin import (
+    AttachRequest,
+    Backend,
+    BackendError,
+    BuildRequest,
+    ImageSource,
+    ResolvedMount,
+    RunRequest,
+    available_backends,
+    get_backend,
+    timed,
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -74,9 +57,10 @@ def setup_logging(verbosity: int) -> None:
     formatter = logging.Formatter(log_format)
     console_handler.setFormatter(formatter)
 
-    # Configure logger
-    logger.setLevel(log_level)
-    logger.addHandler(console_handler)
+    # Configure the package logger; ccd.* module loggers (including backends) propagate to it
+    package_logger = logging.getLogger("ccd")
+    package_logger.setLevel(log_level)
+    package_logger.addHandler(console_handler)
 
     # Set subprocess logging for very verbose mode
     if verbosity >= 3:
@@ -85,286 +69,6 @@ def setup_logging(verbosity: int) -> None:
         subprocess_logger.addHandler(console_handler)
 
     logger.debug("Logging configured with verbosity level: %s", verbosity)
-
-
-def _parse_comma_set(value: str) -> set[str]:
-    return {v.strip() for v in value.split(",") if v.strip()}
-
-
-@dataclass
-class BuildConfig:
-    with_features: set[str] | None = None
-    without_features: set[str] | None = None
-    force: bool = False
-    npm_min_release_age_days: int = 7
-    npm_audit_ignore_components: set[str] = field(default_factory=set)
-    npm_audit_force_fix_components: set[str] = field(default_factory=set)
-    npm_min_release_age_ignore_components: set[str] = field(default_factory=set)
-    versions: dict[str, str] = field(default_factory=dict)
-
-    @classmethod
-    def load(cls, path: Path) -> "BuildConfig":
-        """Load config from a TOML file; returns defaults if file does not exist."""
-        if not path.exists():
-            return cls()
-        if tomllib is None:
-            logger.error("Config file found but tomllib is unavailable. Upgrade to Python 3.11+ or install 'tomli'.")
-            sys.exit(1)
-
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-
-        build = data.get("build", {})
-        versions_data = data.get("versions", {})
-
-        def as_set(v: object) -> set[str]:
-            if isinstance(v, list):
-                return {str(x).strip() for x in v if str(x).strip()}
-            if isinstance(v, str):
-                return _parse_comma_set(v)
-            return set()
-
-        return cls(
-            with_features=as_set(build["with_features"]) if "with_features" in build else None,
-            without_features=as_set(build["without_features"]) if "without_features" in build else None,
-            npm_min_release_age_days=build.get("npm_min_release_age_days", 7),
-            npm_audit_ignore_components=as_set(build.get("npm_audit_ignore_components", [])),
-            npm_audit_force_fix_components=as_set(build.get("npm_audit_force_fix_components", [])),
-            npm_min_release_age_ignore_components=as_set(build.get("npm_min_release_age_ignore_components", [])),
-            versions={k: str(v) for k, v in versions_data.items() if k in VERSION_BUILD_ARGS},
-        )
-
-    def apply_cli(self, args: argparse.Namespace) -> "BuildConfig":
-        """Return a new config with explicitly provided CLI args applied on top."""
-        config = replace(self)
-
-        if args.with_features is not None:
-            config.with_features = _parse_comma_set(args.with_features)
-        if args.without_features is not None:
-            config.without_features = _parse_comma_set(args.without_features)
-        if args.force:
-            config.force = True
-        if args.npm_min_release_age_days is not None:
-            config.npm_min_release_age_days = args.npm_min_release_age_days
-        if args.npm_audit_ignore_components is not None:
-            config.npm_audit_ignore_components = _parse_comma_set(args.npm_audit_ignore_components)
-        if args.npm_audit_force_fix_components is not None:
-            config.npm_audit_force_fix_components = _parse_comma_set(args.npm_audit_force_fix_components)
-        if args.npm_min_release_age_ignore_components is not None:
-            config.npm_min_release_age_ignore_components = _parse_comma_set(args.npm_min_release_age_ignore_components)
-
-        for component in VERSION_BUILD_ARGS:
-            version = getattr(args, f"{component}_version", None)
-            if version is not None:
-                config.versions[component] = version
-
-        return config
-
-    def validate(self) -> None:
-        if self.with_features is not None and self.without_features is not None:
-            logger.error("Use only one of --with or --without")
-            sys.exit(1)
-        for features in (self.with_features, self.without_features):
-            if features is None:
-                continue
-            unknown = features - set(FEATURE_BUILD_ARGS.keys())
-            if unknown:
-                logger.error("Unknown feature(s): %s", ", ".join(sorted(unknown)))
-                logger.error("Available features: %s", ", ".join(sorted(FEATURE_BUILD_ARGS.keys())))
-                sys.exit(1)
-
-    def to_docker_build_args(self, extra_args: list[str]) -> list[str]:
-        """Produce the full list of docker-build flag tokens."""
-        result: list[str] = [*extra_args]
-
-        if self.force:
-            logger.debug("Force flag set, disabling Docker layer caching")
-            result.append("--no-cache")
-
-        if self.with_features is not None:
-            for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
-                result.extend(["--build-arg", f"{build_arg}={'1' if feature in self.with_features else '0'}"])
-        elif self.without_features is not None:
-            for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
-                result.extend(["--build-arg", f"{build_arg}={'0' if feature in self.without_features else '1'}"])
-
-        logger.debug("Setting NPM_CLI_MIN_RELEASE_AGE_DAYS=%s", self.npm_min_release_age_days)
-        result.extend(["--build-arg", f"NPM_CLI_MIN_RELEASE_AGE_DAYS={self.npm_min_release_age_days}"])
-
-        if self.npm_audit_ignore_components:
-            logger.debug("Setting NPM_AUDIT_IGNORE_COMPONENTS=%s", self.npm_audit_ignore_components)
-            result.extend(["--build-arg", f"NPM_AUDIT_IGNORE_COMPONENTS={','.join(sorted(self.npm_audit_ignore_components))}"])
-        if self.npm_audit_force_fix_components:
-            logger.debug("Setting NPM_AUDIT_FORCE_FIX_COMPONENTS=%s", self.npm_audit_force_fix_components)
-            result.extend(["--build-arg", f"NPM_AUDIT_FORCE_FIX_COMPONENTS={','.join(sorted(self.npm_audit_force_fix_components))}"])
-        if self.npm_min_release_age_ignore_components:
-            logger.debug("Setting NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS=%s", self.npm_min_release_age_ignore_components)
-            result.extend(["--build-arg", f"NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS={','.join(sorted(self.npm_min_release_age_ignore_components))}"])
-
-        for component, build_arg in sorted(VERSION_BUILD_ARGS.items()):
-            if component in self.versions:
-                logger.debug("Setting %s=%s", build_arg, self.versions[component])
-                result.extend(["--build-arg", f"{build_arg}={self.versions[component]}"])
-
-        return result
-
-
-def build_image(image_name: str, docker_args: str) -> None:
-    """Build the Docker image"""
-    logger.info("Building Docker image: %s", image_name)
-
-    build_command = f"docker build {docker_args} -f Dockerfile -t '{image_name}' ."
-    logger.debug("Build command: %s", build_command)
-
-    try:
-        logger.debug("Starting Docker build process")
-        # Stream output directly to console in real-time
-        _ = subprocess.run(build_command, shell=True, check=True)
-
-        logger.info("Build completed successfully!")
-
-    except subprocess.CalledProcessError as e:
-        logger.error("Build failed with exit code %s", e.returncode)
-        sys.exit(1)
-    except FileNotFoundError:
-        logger.error("Docker not found. Please ensure Docker is installed and in PATH")
-        sys.exit(1)
-
-
-
-@dataclass
-class MountConfig:
-    host: str
-    container: str
-    type: Literal["file", "folder"] = "folder"
-    optional: bool = False
-    readonly: bool = False
-
-    def to_path_spec(self) -> "PathSpec":
-        return PathSpec(
-            path=Path(self.host).expanduser(),
-            volume_mapping=Path(self.container),
-            type=self.type,
-            optional=self.optional,
-            readonly=self.readonly,
-        )
-
-
-@dataclass
-class RunConfig:
-    memory: str | None = None
-    cpus: str | None = None
-    mounts: List[MountConfig] = field(default_factory=list)
-
-    @classmethod
-    def load(cls, path: Path) -> "RunConfig":
-        """Load [run] section from a ccd.toml file; returns defaults if absent."""
-        if not path.exists():
-            return cls()
-        if tomllib is None:
-            logger.error("Config file found but tomllib is unavailable. Upgrade to Python 3.11+ or install 'tomli'.")
-            sys.exit(1)
-
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-
-        run = data.get("run", {})
-        raw_mounts = run.get("mounts", [])
-
-        mounts: List[MountConfig] = []
-        for m in raw_mounts:
-            if "host" not in m or "container" not in m:
-                logger.error("Each [[run.mounts]] entry must have 'host' and 'container' keys")
-                sys.exit(1)
-            mounts.append(MountConfig(
-                host=m["host"],
-                container=m["container"],
-                type=m.get("type", "folder"),
-                optional=m.get("optional", False),
-                readonly=m.get("readonly", False),
-            ))
-
-        return cls(
-            memory=run.get("memory"),
-            cpus=run.get("cpus"),
-            mounts=mounts,
-        )
-
-    def merge(self, local: "RunConfig") -> "RunConfig":
-        """Return a new config with local values taking precedence over self (global).
-
-        Scalar fields (memory, cpus): local wins if set, otherwise fall back to global.
-        Mounts: global mounts first, then local mounts (both are applied).
-        """
-        return RunConfig(
-            memory=local.memory if local.memory is not None else self.memory,
-            cpus=local.cpus if local.cpus is not None else self.cpus,
-            mounts=self.mounts + local.mounts,
-        )
-
-    @classmethod
-    def load_effective(cls, local_path: Path, global_path: Path = GLOBAL_CONFIG_PATH) -> "RunConfig":
-        """Load and merge global and local configs. Local file wins for scalars; mounts are combined."""
-        global_cfg = cls.load(global_path)
-        local_cfg = cls.load(local_path)
-        effective = global_cfg.merge(local_cfg)
-        if global_cfg.mounts or global_cfg.memory or global_cfg.cpus:
-            logger.debug("Global run config loaded from: %s", global_path)
-        logger.debug("Effective run config: %s", effective)
-        return effective
-
-
-@dataclass
-class PathSpec:
-    path: Path
-    volume_mapping: Path
-    type: Literal["file", "folder"] = "folder"
-    optional: bool = False
-    readonly: bool = False
-
-
-@dataclass
-class RunParameters:
-    image_name: str
-    app_folder: str
-    home_folder: str
-    memory: str = "1g"
-    cpus: str = "2"
-    root: bool = False
-    extra_mounts: List[MountConfig] = field(default_factory=list)
-
-    @classmethod
-    def from_args(cls, image_name: str, args: argparse.Namespace, run_config: "RunConfig | None" = None, app_folder: str | None = None) -> "RunParameters":
-        """Create RunParameters from CLI args, optionally layering a RunConfig on top.
-
-        Args:
-            image_name: Name of the Docker image to use
-            args: Parsed command line arguments
-            run_config: Optional config loaded from ccd.toml (config values are
-                        overridden by any explicitly supplied CLI args)
-            app_folder: Override for app_folder (defaults to args.app_folder or ".")
-        """
-        if app_folder is None:
-            app_folder = args.app_folder if hasattr(args, "app_folder") else "."
-
-        memory = args.memory
-        cpus = args.cpus
-        if run_config is not None:
-            # CLI args take precedence; fall back to config values when CLI uses defaults
-            if run_config.memory is not None and args.memory == "1g":
-                memory = run_config.memory
-            if run_config.cpus is not None and args.cpus == "2":
-                cpus = run_config.cpus
-
-        return cls(
-            image_name=image_name,
-            app_folder=app_folder,
-            home_folder=args.home,
-            memory=memory,
-            cpus=cpus,
-            root=args.root,
-            extra_mounts=run_config.mounts if run_config is not None else [],
-        )
 
 
 class VolumeManager:
@@ -391,20 +95,17 @@ class VolumeManager:
                 logger.debug("Creating file: %s", spec.path)
                 spec.path.touch(exist_ok=True)
 
-    def get_volume_commands(self) -> List[str]:
-        """Generate volume mount commands for docker."""
-        volume_cmds: List[str] = []
+    def resolved_mounts(self) -> List[ResolvedMount]:
+        """Runtime-neutral mounts for backends to render in their own way."""
+        mounts: List[ResolvedMount] = []
         for spec in self.path_specs:
             if not spec.path.exists():
                 if spec.optional:
                     logger.debug("Optional path does not exist, skipping: %s", spec.path)
                     continue
                 raise FileNotFoundError(f"Source path does not exist: {spec.path}")
-            mount_str = f"{spec.path.resolve()}:{spec.volume_mapping}"
-            if spec.readonly:
-                mount_str += ":ro"
-            volume_cmds.extend(["-v", mount_str])
-        return volume_cmds
+            mounts.append(ResolvedMount(host=spec.path.resolve(), container=spec.volume_mapping, readonly=spec.readonly))
+        return mounts
 
 
 def get_container_base_name():
@@ -414,29 +115,16 @@ def get_container_base_name():
     return CONTAINER_NAME_BASE
 
 
-def get_running_containers():
-    """Get a list of currently running docker containers"""
-    cmd = ["docker", "ps", "--format", "{{.Names}}"]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        running_containers = result.stdout.splitlines()
-        # filter ones matching our pattern
-        running_containers = [name for name in running_containers if name.startswith(CONTAINER_NAME_BASE + "-")]
-        logger.debug("Currently running containers: %s", running_containers)
-
-        return list(sorted(running_containers))
-
-    except subprocess.CalledProcessError as e:
-        logger.error("Failed to get running containers with exit code %s", e.returncode)
-        sys.exit(1)
-    except FileNotFoundError:
-        logger.error("Docker not found. Please ensure Docker is installed and in PATH")
-        sys.exit(1)
+def get_running_containers(backend: Backend) -> List[str]:
+    """Get a list of currently running environments belonging to ccd"""
+    running = [name for name in backend.list_running() if name.startswith(CONTAINER_NAME_BASE + "-")]
+    logger.debug("Currently running containers: %s", running)
+    return list(sorted(running))
 
 
-def get_next_free_container_name(folder: str) -> str:
-    """Check current running docker containers and when starting a new one, avoid name conflict by appending a number suffix"""
-    running_containers = get_running_containers()
+def get_next_free_container_name(backend: Backend, folder: str) -> str:
+    """Check current running environments and when starting a new one, avoid name conflict by appending a number suffix"""
+    running_containers = get_running_containers(backend)
 
     suffix = 1
     while True:
@@ -447,11 +135,11 @@ def get_next_free_container_name(folder: str) -> str:
         suffix += 1
 
 
-def prompt_container_name():
+def prompt_container_name(backend: Backend):
     """Prompt user for a container name"""
 
     while True:
-        running = get_running_containers()
+        running = get_running_containers(backend)
 
         if not running:
             raise ValueError("No running containers found!")
@@ -480,8 +168,8 @@ def prompt_container_name():
             print("Invalid input. Please enter a valid container name or number.")
 
 
-def run_container(params: RunParameters):
-    """Run the Docker container with specified volumes and resource limits"""
+def run_container(backend: Backend, params: RunParameters, backend_options: dict | None = None) -> None:
+    """Resolve mounts and hand the run off to the backend"""
     logger.info("Preparing to run container: %s", params.image_name)
 
     # Convert to absolute paths
@@ -512,89 +200,48 @@ def run_container(params: RunParameters):
 
     volume_manager = VolumeManager(path_specs)
     volume_manager.prepare_paths()
-    volume_cmds = volume_manager.get_volume_commands()
+    mounts = volume_manager.resolved_mounts()
 
-    container_name = get_next_free_container_name(app_path.name)
+    container_name = get_next_free_container_name(backend, app_path.name)
 
     print(f"Starting container '{container_name}'...")
 
-    # Build Docker run command
-    cmd = [
-        "docker",
-        "run",
-        "-it",
-        "--rm",
-        "--memory",
-        params.memory,
-        "--cpus",
-        params.cpus,
-        "--hostname",
-        container_name,
-        "--name",
-        container_name,
-        # Allow bwrap (bubblewrap) to create user namespaces inside the container.
-        # Docker's default seccomp profile blocks the clone syscall flags required
-        # by bwrap even when kernel.unprivileged_userns_clone=1 is set on the host.
-        "--security-opt",
-        "seccomp=unconfined",
-    ]
-
-    if params.root:
-        cmd.extend(["--user", "root"])
-
-    cmd.extend([*volume_cmds, params.image_name])
-
     logger.info("Starting container with:")
+    logger.info("  Backend: %s", backend.name)
     logger.info("  App folder: %s", app_path)
     logger.info("  Home folder: %s", home_path)
     logger.info("  Memory limit: %s", params.memory)
     logger.info("  CPU limit: %s", params.cpus)
     logger.info("  User: %s", "root" if params.root else "user")
-    logger.info("  Full command: %s", " ".join(cmd))
 
-    try:
-        logger.debug("Executing docker run command")
-        subprocess.run(cmd, check=True)
-        logger.info("Container execution completed successfully")
-
-    except subprocess.CalledProcessError as e:
-        logger.error("Container run failed with exit code %s", e.returncode)
-        sys.exit(1)
-    except KeyboardInterrupt:
-        logger.info("Container stopped by user")
-        sys.exit(0)
-    except FileNotFoundError:
-        logger.error("Docker not found. Please ensure Docker is installed and in PATH")
-        sys.exit(1)
+    backend.run(
+        RunRequest(
+            image_name=params.image_name,
+            name=container_name,
+            memory=params.memory,
+            cpus=params.cpus,
+            root=params.root,
+            mounts=mounts,
+            options=backend_options or {},
+        )
+    )
 
 
-def attach_container(root: bool) -> None:
-    """Attach to a running Docker container"""
-    logger.info("Attaching to running Docker container: ccd-container")
-
-    container_name = prompt_container_name()
+def attach_container(backend: Backend, root: bool, backend_options: dict | None = None) -> None:
+    """Attach to a running container"""
+    container_name = prompt_container_name(backend)
 
     print(f"Attaching to container '{container_name}'...")
 
-    cmd = ["docker", "exec", "-it"]
+    backend.attach(AttachRequest(name=container_name, root=root, options=backend_options or {}))
 
-    if root:
-        cmd.extend(["--user", "root"])
 
-    cmd.extend([container_name, "/bin/bash"])
-
-    # ubuntu@7c3c7131cb15:/app$ exit
-    # exit
-    # Attach failed with exit code 130
-    try:
-        logger.debug("Executing docker exec command")
-        subprocess.run(cmd)
-    except subprocess.CalledProcessError as e:
-        logger.error("Attach failed with exit code %s", e.returncode)
-        sys.exit(1)
-    except FileNotFoundError:
-        logger.error("Docker not found. Please ensure Docker is installed and in PATH")
-        sys.exit(1)
+def add_backend_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--backend",
+        default=None,
+        help=f"Runtime backend plugin (default: [run].backend from {CONFIG_FILE_NAME}, else {DEFAULT_BACKEND})",
+    )
 
 
 def add_container_args(parser: argparse.ArgumentParser, home_folder: Path) -> argparse.ArgumentParser:
@@ -602,20 +249,66 @@ def add_container_args(parser: argparse.ArgumentParser, home_folder: Path) -> ar
     parser.add_argument("--home", default=home_folder, help=f"Home folder path (default: ${home_folder})")
     parser.add_argument("--memory", default="1g", help="Memory limit for the container (default: 1g)")
     parser.add_argument("--cpus", default="2", help="Number of CPUs for the container (default: 2)")
-    parser.add_argument("--root", action="store_true", help="Run container as root user instead of default user")
+    parser.add_argument("--root", action="store_true", help="Run as root")
+    add_backend_arg(parser)
     return parser
+
+
+
+def load_backend(name: str, run_config: RunConfig) -> tuple[Backend, dict]:
+    """Load a backend plugin together with its [<name>] options table."""
+    return get_backend(name), run_config.backend_options.get(name, {})
+
+
+def run_backend_name(args: argparse.Namespace, run_config: RunConfig) -> str:
+    """CLI --backend beats [run].backend beats the default."""
+    return getattr(args, "backend", None) or run_config.backend or DEFAULT_BACKEND
+
+
+def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: list[str]) -> None:
+    """Build with the build backend; when it differs from the run backend, hand the image over."""
+    config = BuildConfig.load(Path(CONFIG_FILE_NAME)).apply_cli(args)
+    config.validate()
+    logger.debug("Effective build config: %s", config)
+
+    run_name = run_config.backend or DEFAULT_BACKEND
+    build_name = args.backend or config.backend or run_name
+
+    builder, builder_options = load_backend(build_name, run_config)
+    with timed(f"Build ({build_name})", logger):
+        builder.build(BuildRequest(image_name=IMAGE_NAME, config=config, extra_args=extra_args, options=builder_options))
+
+    if build_name == run_name:
+        return
+
+    runner, runner_options = load_backend(run_name, run_config)
+    export_request = BuildRequest(image_name=IMAGE_NAME, config=config, options=builder_options)
+    source = ImageSource(
+        name=IMAGE_NAME,
+        formats=builder.image_formats(),
+        exporter=lambda dest: builder.export_image(export_request, dest),
+        archive_path=IMAGE_STORE / f"{IMAGE_NAME}.tar",
+    )
+    logger.info("Handing image from '%s' to '%s'", build_name, run_name)
+    with timed(f"Import ({run_name})", logger):
+        runner.import_image(source, BuildRequest(image_name=IMAGE_NAME, config=config, options=runner_options))
 
 
 def main() -> None:
     """Main entry point for the ccd command line tool"""
-    parser = argparse.ArgumentParser(description="Run ccd Docker container")
+    parser = argparse.ArgumentParser(description="Run ccd containers on pluggable backends")
 
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity level (can be used multiple times: -v, -vv, -vvv)")
 
     command_parser = parser.add_subparsers(dest="command", required=True, help="Command to execute")
     command_parser.required = True
 
-    build_parser = command_parser.add_parser("build", help="Build the Docker image")
+    build_parser = command_parser.add_parser("build", help="Build the image")
+    build_parser.add_argument(
+        "--backend",
+        default=None,
+        help=f"Backend that builds the image (default: [build].backend from {CONFIG_FILE_NAME}, else the run backend)",
+    )
     build_parser.add_argument(
         "--with",
         dest="with_features",
@@ -665,15 +358,18 @@ def main() -> None:
 
     home_folder = Path.home() / ".claude-code-docker"
 
-    dot_parser = command_parser.add_parser(".", help="Run the Docker container in current directory")
+    dot_parser = command_parser.add_parser(".", help="Run the container in current directory")
     add_container_args(dot_parser, home_folder)
 
-    run_parser = command_parser.add_parser("run", help="Run the Docker container")
+    run_parser = command_parser.add_parser("run", help="Run the container")
     run_parser.add_argument("app_folder", nargs="?", default="./app", help="App folder path (default: ./app)")
     add_container_args(run_parser, home_folder)
 
-    attach_parser = command_parser.add_parser("attach", help="Attach to a running Docker container")
-    attach_parser.add_argument("--root", action="store_true", help="Attach as root user instead of default ubuntu user")
+    attach_parser = command_parser.add_parser("attach", help="Attach to a running container")
+    attach_parser.add_argument("--root", action="store_true", help="Attach as root")
+    add_backend_arg(attach_parser)
+
+    command_parser.add_parser("backends", help="List installed backend plugins")
 
     args, unknown = parser.parse_known_args()
 
@@ -684,28 +380,29 @@ def main() -> None:
     logger.debug("Image name: %s", IMAGE_NAME)
 
     try:
+        if args.command == "backends":
+            for name in sorted(available_backends()):
+                print(name)
+            return
+
+        run_config = RunConfig.load_effective(Path(CONFIG_FILE_NAME))
+
         if args.command == "build":
             logger.debug("Executing build command")
-            config = BuildConfig.load(Path(CONFIG_FILE_NAME)).apply_cli(args)
-            config.validate()
-            logger.debug("Effective build config: %s", config)
-            docker_arg_list = config.to_docker_build_args(unknown)
-            build_image(IMAGE_NAME, shlex.join(docker_arg_list))
-        elif args.command == "run":
+            build_image(args, run_config, unknown)
+        elif args.command in ("run", "."):
             logger.debug("Executing run command")
-            run_config = RunConfig.load_effective(Path(CONFIG_FILE_NAME))
-            params = RunParameters.from_args(IMAGE_NAME, args, run_config=run_config)
-            logger.debug("Effective run config: %s", run_config)
-            run_container(params)
-        elif args.command == ".":
-            logger.debug("Executing run command with default . folder")
-            run_config = RunConfig.load_effective(Path(CONFIG_FILE_NAME))
-            params = RunParameters.from_args(IMAGE_NAME, args, run_config=run_config, app_folder=".")
-            logger.debug("Effective run config: %s", run_config)
-            run_container(params)
+            backend, backend_options = load_backend(run_backend_name(args, run_config), run_config)
+            app_folder = "." if args.command == "." else None
+            params = RunParameters.from_args(IMAGE_NAME, args, run_config=run_config, app_folder=app_folder)
+            run_container(backend, params, backend_options)
         elif args.command == "attach":
             logger.debug("Executing attach command")
-            attach_container(args.root)
+            backend, backend_options = load_backend(run_backend_name(args, run_config), run_config)
+            attach_container(backend, args.root, backend_options)
+    except BackendError as e:
+        logger.error("%s", e)
+        sys.exit(1)
     except KeyboardInterrupt:
         print("\nOperation cancelled by user")
         sys.exit(0)

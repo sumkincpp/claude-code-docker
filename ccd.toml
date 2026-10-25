@@ -1,4 +1,8 @@
 [build]
+# Backend that builds the image (default: the [run] backend). Building with docker and
+# running on firecracker hands the image over automatically.
+backend = "docker"
+
 # Minimum release age in days for npm packages resolved by tag (e.g. latest)
 npm_min_release_age_days = 2
 
