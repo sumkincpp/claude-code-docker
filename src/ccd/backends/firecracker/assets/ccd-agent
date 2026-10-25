@@ -1,0 +1,124 @@
+#!/usr/bin/python3 -u
+"""Guest agent for ccd Firecracker VMs: runs interactive sessions on a pty for the host over vsock.
+
+Protocol (port 1024): the host sends one JSON line, then for a session both sides stream raw terminal bytes.
+  {"op": "session", "user": "root|user", "term": "xterm-256color", "rows": 40, "cols": 120}   -> replies "OK <sid>\\n"
+  {"op": "resize", "sid": <sid>, "rows": r, "cols": c}                                       (separate connection)
+  {"op": "poweroff"}
+"""
+import fcntl
+import json
+import os
+import select
+import shlex
+import signal
+import socket
+import struct
+import subprocess
+import termios
+import threading
+
+PORT = 1024
+ENTRYPOINT = "cd /app 2>/dev/null; export TERM={term}; exec /usr/local/bin/ccd-entrypoint bash -l"
+
+sessions: dict[int, int] = {}  # session id -> pty master fd
+lock = threading.Lock()
+counter = 0
+
+
+def set_size(fd: int, rows: int | None, cols: int | None) -> None:
+    if rows and cols:
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", int(rows), int(cols), 0, 0))
+
+
+def read_line(conn: socket.socket) -> bytes:
+    """One byte at a time, so no session data that follows the request line is consumed."""
+    buf = b""
+    while not buf.endswith(b"\n") and len(buf) < 65536:
+        chunk = conn.recv(1)
+        if not chunk:
+            break
+        buf += chunk
+    return buf
+
+
+def session_argv(request: dict) -> list[str]:
+    user = "root" if request.get("user") == "root" else "user"
+    return ["su", "-s", "/bin/bash", "-l", user, "-c", ENTRYPOINT.format(term=shlex.quote(request.get("term") or "linux"))]
+
+
+def run_session(conn: socket.socket, request: dict) -> None:
+    global counter
+    argv = session_argv(request)
+
+    master, slave = os.openpty()
+    set_size(master, request.get("rows"), request.get("cols"))
+    # New session with the pty as controlling terminal: job control, Ctrl-C and signals work
+    proc = subprocess.Popen(
+        argv, stdin=slave, stdout=slave, stderr=slave, start_new_session=True, close_fds=True,
+        preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0),
+    )
+    os.close(slave)
+    with lock:
+        counter += 1
+        sid = counter
+        sessions[sid] = master
+    try:
+        conn.sendall(f"OK {sid}\n".encode())
+        while True:
+            readable, _, _ = select.select([conn, master], [], [])
+            if master in readable:
+                try:
+                    data = os.read(master, 65536)
+                except OSError:  # EIO once the session's last process has gone
+                    data = b""
+                if not data:
+                    break
+                conn.sendall(data)
+            if conn in readable:
+                data = conn.recv(65536)
+                if not data:  # host went away
+                    proc.send_signal(signal.SIGHUP)
+                    break
+                os.write(master, data)
+    finally:
+        with lock:
+            sessions.pop(sid, None)
+        os.close(master)
+        proc.wait()
+
+
+def handle(conn: socket.socket) -> None:
+    try:
+        line = read_line(conn)
+        if not line.strip():
+            return  # a readiness probe from the host
+        request = json.loads(line)
+        op = request.get("op")
+        if op == "session":
+            run_session(conn, request)
+        elif op == "resize":
+            with lock:
+                fd = sessions.get(request.get("sid"))
+            if fd is not None:
+                set_size(fd, request.get("rows"), request.get("cols"))
+        elif op == "poweroff":
+            subprocess.run(["poweroff", "-f"], check=False)
+    except (OSError, ValueError) as e:
+        print(f"ccd-agent: {e}")
+    finally:
+        conn.close()
+
+
+def main() -> None:
+    server = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+    server.bind((socket.VMADDR_CID_ANY, PORT))
+    server.listen(8)
+    print(f"ccd-agent: listening on vsock port {PORT}")
+    while True:
+        conn, _ = server.accept()
+        threading.Thread(target=handle, args=(conn,), daemon=True).start()
+
+
+if __name__ == "__main__":
+    main()

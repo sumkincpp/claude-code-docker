@@ -9,7 +9,7 @@ import argparse
 import logging
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib import import_module
@@ -75,24 +75,11 @@ class AttachRequest:
 class ImageSource:
     """An image handed from the build backend to a different run backend.
 
-    `formats` lists the cheap native forms the image is already available in (e.g. "docker-daemon");
-    `archive()` falls back to exporting a `docker save`-style tar, which can be very slow, only when asked.
+    `formats` lists the native forms the image is already available in (e.g. "docker-daemon").
     """
 
     name: str
     formats: set[str]
-    exporter: Callable[[Path], None]
-    archive_path: Path
-
-    def archive(self) -> Path:
-        try:
-            self.archive_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            parent = self.archive_path.parent
-            raise BackendError(f"Cannot create image store {parent}: {e.strerror}. Check ownership: ls -ld {parent.parent} {parent.parent.parent}") from e
-        with timed("Image export", logger):
-            self.exporter(self.archive_path)
-        return self.archive_path
 
 
 class Backend(ABC):
@@ -119,16 +106,12 @@ class Backend(ABC):
     def list_running(self) -> list[str]:
         """Names of running environments, unfiltered."""
 
-    def export_image(self, request: BuildRequest, dest: Path) -> None:
-        """Write the built image to `dest` as a `docker save`-style archive (for a different run backend)."""
-        raise BackendError(f"Backend '{self.name}' cannot export images")
-
     def image_formats(self) -> set[str]:
         """Native image forms this backend's builds are available in without exporting (e.g. {"docker-daemon"})."""
         return set()
 
     def import_image(self, source: ImageSource, request: BuildRequest) -> None:
-        """Make an image built by another backend runnable by this backend (prefer source.formats over source.archive())."""
+        """Make an image built by another backend runnable by this backend (according to source.formats)."""
         raise BackendError(f"Backend '{self.name}' cannot import images")
 
 
@@ -147,6 +130,7 @@ class _BuiltinBackend:
 
 BUILTIN_BACKENDS = {
     "docker": "ccd.backends.docker:DockerBackend",
+    "firecracker": "ccd.backends.firecracker:FirecrackerBackend",
 }
 
 

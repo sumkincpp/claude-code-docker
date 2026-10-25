@@ -21,7 +21,6 @@ CONFIG_FILE_NAME = "ccd.toml"
 GLOBAL_CONFIG_PATH = Path.home() / ".config" / "ccd" / "ccd.toml"
 DEFAULT_BACKEND = "docker"
 # Exported images handed from a build backend to a different run backend
-IMAGE_STORE = Path.home() / ".cache" / "ccd" / "images"
 
 FEATURE_BUILD_ARGS = {
     "rust": "WITH_RUST",

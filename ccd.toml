@@ -42,6 +42,9 @@ with_features = ["codex", "claude", "pi", "copilot", "rust"]
 # ---------------------------------------------------------------------------
 [run]
 
+# Runtime backend plugin
+backend = "firecracker"
+
 # memory = "4g"
 # cpus  = "4"
 
@@ -66,3 +69,13 @@ optional  = true
 # container = "/home/user/.ssh"
 # readonly  = true
 # optional  = true
+
+# ---------------------------------------------------------------------------
+# Firecracker backend options (used when backend = "firecracker")
+# ---------------------------------------------------------------------------
+[firecracker]
+# Firecracker CI guest kernel (6.1); {arch} becomes x86_64 or aarch64 for the host: ext4, virtio-mmio blk/net, NFSv4 client, overlayfs, user namespaces built in.
+# The dated folder rotates. Other kernels: https://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/
+# (pick the newest folder, then <arch>/vmlinux-*) and https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md
+kernel_url  = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20261023-dd7c24b0d165-0/{arch}/vmlinux-6.1.188"
+# cache_dir   = "~/.cache/ccd/firecracker"

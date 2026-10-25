@@ -1,0 +1,14 @@
+# The ccd image plus what a microVM needs. Deliberately no `# syntax=` line: the built-in frontend is enough here
+# and the line costs a registry round trip on every build.
+#   docker build -t ccd-vm --build-arg BASE_IMAGE=ccd -f Dockerfile.rootfs <this dir>
+# The backend then packs it with `docker run … mksquashfs`, writing straight into the cache directory.
+ARG BASE_IMAGE=ccd
+FROM ${BASE_IMAGE}
+USER root
+RUN apk add --no-cache nfs-utils squashfs-tools python3
+COPY ccd-init ccd-agent /sbin/
+RUN chmod 0755 /sbin/ccd-init /sbin/ccd-agent
+# Container ENV does not exist in a VM: replay the relevant variables for login shells
+RUN mkdir -p /etc/profile.d && \
+    env | grep -E '^(PATH|NVM_DIR|PNPM_[A-Z_]+|UV_[A-Z_]+|DISABLE_AUTOUPDATER|CCD_[A-Z_]+)=' \
+      | sed 's/^/export /; s/=\(.*\)$/="\1"/' > /etc/profile.d/ccd-env.sh

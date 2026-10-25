@@ -1,0 +1,85 @@
+#!/bin/sh
+# Guest init (PID 1) for ccd Firecracker VMs. Configured entirely from the kernel command line:
+#   ccd.ip=<addr>/<prefix>  ccd.gw=<gateway>  ccd.hostname=<name>
+#   ccd.dns=<ip>[,<ip>...]
+#   ccd.mount=<nfs-host>:<export>:<guest-path>:<ro|rw>   (repeatable)
+#   ccd.files=<nfs-host>:<staging-export>                single-file mounts: staging dir, then per file:
+#   ccd.file=<staged-name>:<guest-path>:<ro|rw>          (repeatable)
+#   ccd.overlay=1   root (/dev/vda) is a shared read-only base; /dev/vdb is this VM's writable layer
+mount -t proc proc /proc
+mount -t devtmpfs dev /dev 2>/dev/null || true
+
+cmdline=$(cat /proc/cmdline)
+get() { for w in $cmdline; do case "$w" in "$1="*) echo "${w#"$1="}" ;; esac; done; }
+
+# Stage 1: build an overlay root (read-only base + per-VM upper layer), pivot into it and re-exec as stage 2.
+# Nothing is copied, so boot cost does not depend on the size of the rootfs.
+if [ "$(get ccd.overlay)" = 1 ] && [ -z "${CCD_STAGE2:-}" ]; then
+  mount -t tmpfs tmpfs /run
+  mkdir -p /run/rw /run/new
+  mount -t ext4 /dev/vdb /run/rw
+  mkdir -p /run/rw/upper /run/rw/work
+  mount -t overlay overlay -o lowerdir=/,upperdir=/run/rw/upper,workdir=/run/rw/work /run/new
+  cd /run/new
+  pivot_root . mnt
+  cd /
+  CCD_STAGE2=1 exec /sbin/ccd-init
+fi
+# Stage 2: the old root (and the stage-1 mounts) hang under /mnt; detach them
+[ -n "${CCD_STAGE2:-}" ] && umount -l /mnt
+
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev 2>/dev/null || true
+mkdir -p /dev/pts /run
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /run
+mount -t tmpfs tmpfs /tmp
+
+if [ -n "$(get ccd.hostname)" ]; then
+  hostname "$(get ccd.hostname)"
+  # The packed image carries the build container's /etc/hosts; write the VM's own
+  printf '127.0.0.1 localhost %s\n::1 localhost\n' "$(get ccd.hostname)" >/etc/hosts
+fi
+ip link set lo up
+if [ -n "$(get ccd.ip)" ]; then
+  ip link set eth0 up
+  ip addr add "$(get ccd.ip)" dev eth0
+  ip route add default via "$(get ccd.gw)"
+fi
+
+dns=$(get ccd.dns)
+if [ -n "$dns" ]; then
+  : >/etc/resolv.conf
+  for d in $(echo "$dns" | tr , ' '); do echo "nameserver $d" >>/etc/resolv.conf; done
+fi
+
+for spec in $(get ccd.mount); do
+  host=${spec%%:*}; rest=${spec#*:}
+  export_path=${rest%%:*}; rest=${rest#*:}
+  guest=${rest%%:*}; mode=${rest#*:}
+  mkdir -p "$guest"
+  # The Firecracker CI guest kernel ships the NFSv4 client only (no CONFIG_NFS_V3)
+  mount -t nfs -o "vers=4.2,$mode" "$host:$export_path" "$guest" || echo "ccd-init: failed to mount $spec" >&2
+done
+
+# Single-file mounts: the host stages them in one exported dir; bind each file to its target
+files=$(get ccd.files)
+if [ -n "$files" ]; then
+  mkdir -p /run/ccd-files
+  mount -t nfs -o vers=4.2,rw "${files%%:*}:${files#*:}" /run/ccd-files || echo "ccd-init: failed to mount $files" >&2
+  for spec in $(get ccd.file); do
+    name=${spec%%:*}; rest=${spec#*:}
+    guest=${rest%%:*}; mode=${rest#*:}
+    mkdir -p "$(dirname "$guest")"
+    touch "$guest"
+    mount --bind "/run/ccd-files/$name" "$guest" || echo "ccd-init: failed to bind $spec" >&2
+    [ "$mode" = ro ] && mount -o remount,ro,bind "$guest"
+  done
+fi
+
+# Interactive sessions are served by ccd-agent over vsock: a real pty (correct Enter handling, TERM, window size and
+# resizes), which the emulated serial console does not give. busybox init becomes PID 1 (reaps processes and keeps the
+# agent running); the host asks the agent to power the VM off when the session ends.
+printf '::respawn:/usr/bin/python3 -u /sbin/ccd-agent\n' >/etc/inittab
+exec /sbin/init

@@ -11,7 +11,6 @@ from ccd.config import (
     DEFAULT_BACKEND,
     IMAGE_HOME_FOLDER,
     IMAGE_NAME,
-    IMAGE_STORE,
     VERSION_BUILD_ARGS,
     BuildConfig,
     PathSpec,
@@ -286,13 +285,7 @@ def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: lis
         return
 
     runner, runner_options = load_backend(run_name, run_config)
-    export_request = BuildRequest(image_name=IMAGE_NAME, config=config, options=builder_options)
-    source = ImageSource(
-        name=IMAGE_NAME,
-        formats=builder.image_formats(),
-        exporter=lambda dest: builder.export_image(export_request, dest),
-        archive_path=IMAGE_STORE / f"{IMAGE_NAME}.tar",
-    )
+    source = ImageSource(name=IMAGE_NAME, formats=builder.image_formats())
     logger.info("Handing image from '%s' to '%s'", build_name, run_name)
     with timed(f"Import ({run_name})", logger):
         runner.import_image(source, BuildRequest(image_name=IMAGE_NAME, config=config, options=runner_options))

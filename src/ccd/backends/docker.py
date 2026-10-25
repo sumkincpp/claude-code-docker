@@ -3,10 +3,9 @@ import shlex
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 from ccd.config import FEATURE_BUILD_ARGS, VERSION_BUILD_ARGS, BuildConfig
-from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, ImageSource, RunRequest
+from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, RunRequest
 
 logger = logging.getLogger(__name__)
 
@@ -135,22 +134,8 @@ class DockerBackend(Backend):
         except subprocess.CalledProcessError as e:
             raise BackendError(f"Attach failed with exit code {e.returncode}") from e
 
-    def export_image(self, request: BuildRequest, dest: Path) -> None:
-        self._docker(["docker", "save", "-o", str(dest), request.image_name], "Image export")
-
     def image_formats(self) -> set[str]:
         return {"docker-daemon"}
-
-    def import_image(self, source: ImageSource, request: BuildRequest) -> None:
-        self._docker(["docker", "load", "-i", str(source.archive())], "Image import")
-
-    @staticmethod
-    def _docker(cmd: list[str], what: str) -> None:
-        logger.debug("Executing: %s", " ".join(cmd))
-        try:
-            subprocess.run(cmd, check=True)
-        except subprocess.CalledProcessError as e:
-            raise BackendError(f"{what} failed with exit code {e.returncode}") from e
 
     def list_running(self) -> list[str]:
         cmd = ["docker", "ps", "--format", "{{.Names}}"]
