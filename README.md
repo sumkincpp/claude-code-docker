@@ -240,6 +240,28 @@ ccd .
 ccd run . --memory 8g --cpus 4
 ```
 
+#### One-off commands
+
+Put a command after `--` to run it instead of an interactive shell. The environment starts, runs the command in `/app`, and is
+removed again; `ccd` exits with the command's exit code.
+
+```bash
+ccd . -- pytest -q                       # run the tests
+ccd run ./app -u root -- apk add curl    # a command as root
+ccd . -- sh -c 'ls | wc -l' > count.txt  # output can be redirected or piped; input can be piped in
+ccd . -- make test && echo passed        # the exit code works in scripts
+```
+
+- Arguments stay separate, so quoting works as in your shell (`-- sh -c '...'`).
+- With a terminal on both stdin and stdout the command gets one (colours, progress bars, Ctrl-C). Otherwise it runs without a
+  terminal, so redirected output has plain newlines and end of input reaches the command.
+- stdout and stderr are merged on the Firecracker backend. The "Starting container" banner goes to stderr so stdout is only the
+  command's output.
+- An interactive shell now also ends `ccd` with the shell's exit code (the status of your last command) instead of printing
+  "Container run failed".
+- Only `.` and `run` take a command; for `ccd build`, `--` still passes extra arguments to the build.
+- Firecracker: after updating ccd, run `ccd build` once to repack the rootfs. `ccd` only warns when the rootfs predates the current VM files and still starts, but an older guest agent does not know one-off commands.
+
 ### Attach to Running Container (ccd attach)
 
 If a container started with `ccd run` is already running, attach to it:
