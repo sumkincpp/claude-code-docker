@@ -52,8 +52,13 @@ def test_build_on_one_backend_hands_the_image_to_the_run_backend(ccd):
     code, calls = ccd("build", toml=toml)
 
     assert code == 0
-    assert [(backend, op) for backend, op, _ in calls] == [("fake-build", "build"), ("fake-run", "import")]
-    assert calls[1][2].formats == {"fake-native"}  # the lazy hand-off advertises what the builder already has
+    assert [(backend, op) for backend, op, _ in calls] == [
+        ("fake-build", "build"),
+        ("fake-build", "provide"),
+        ("fake-run", "import"),
+        ("fake-build", "release"),  # the builder keeps the image available until the runner is done
+    ]
+    assert calls[2][2] == ("fake-native", "ccd")
 
 
 def test_build_with_the_same_backend_does_not_hand_over(ccd):
@@ -65,7 +70,7 @@ def test_build_with_the_same_backend_does_not_hand_over(ccd):
 def test_build_backend_flag_overrides_only_the_build_side(ccd):
     _, calls = ccd("build", "--backend", "fake-build", toml='[run]\nbackend = "fake-run"\n')
 
-    assert [(backend, op) for backend, op, _ in calls] == [("fake-build", "build"), ("fake-run", "import")]
+    assert [(backend, op) for backend, op, _ in calls if op != "release"] == [("fake-build", "build"), ("fake-build", "provide"), ("fake-run", "import")]
 
 
 def test_attach_picks_the_single_running_environment_as_root(ccd):
@@ -205,16 +210,75 @@ def test_firecracker_build_without_a_kernel_fails(ccd, tmp_path, monkeypatch, ca
     from ccd.backends import firecracker as fc
 
     _, toml = _firecracker_cache(tmp_path, monkeypatch, kernel=False)
-    monkeypatch.setattr(fc.FirecrackerBackend, "_rootfs_via_docker", staticmethod(lambda *args: None))
+    monkeypatch.setattr(fc.FirecrackerBackend, "_rootfs_from", staticmethod(lambda *args: None))
 
     code, calls = ccd("build", toml='[build]\nbackend = "fake-docker"\n\n[run]\nbackend = "firecracker"\n' + toml)
 
     assert code == 1 and "No guest kernel" in capsys.readouterr().out
 
 
-def test_firecracker_only_imports_from_a_docker_daemon(ccd, tmp_path, monkeypatch, capsys):
+def test_firecracker_refuses_images_in_formats_it_cannot_import(ccd, tmp_path, monkeypatch, capsys):
     _, toml = _firecracker_cache(tmp_path, monkeypatch)
 
     code, _ = ccd("build", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "firecracker"\n' + toml)
 
-    assert code == 1 and "local Docker daemon" in capsys.readouterr().out
+    assert code == 1 and "cannot run images built by 'fake-build'" in capsys.readouterr().out
+
+
+def test_hand_over_uses_the_runners_first_choice_among_what_the_builder_offers(ccd, monkeypatch):
+    from conftest import FakeBuilder, FakeRunner
+
+    monkeypatch.setattr(FakeBuilder, "offers", ["cheap", "rich"])
+    monkeypatch.setattr(FakeRunner, "accepts", ["rich", "cheap"])  # the runner prefers rich even though it costs more
+
+    _, calls = ccd("build", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n')
+
+    assert ("fake-run", "import", ("rich", "ccd")) in calls
+
+
+def test_hand_over_without_a_common_format_names_both_backends(ccd, monkeypatch, capsys):
+    from conftest import FakeRunner
+
+    monkeypatch.setattr(FakeRunner, "accepts", ["something-else"])
+
+    code, calls = ccd("build", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n')
+
+    out = capsys.readouterr().out
+    assert code == 1 and [op for _, op, _ in calls] == ["build"]
+    assert "fake-build offers: fake-native" in out and "fake-run accepts: something-else" in out
+
+
+def test_builder_releases_the_image_even_when_the_import_fails(ccd, monkeypatch):
+    from conftest import FakeRunner
+
+    monkeypatch.setattr(FakeRunner, "import_fails", True)
+
+    code, calls = ccd("build", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n')
+
+    assert code == 1 and calls[-1][:2] == ("fake-build", "release")
+
+
+def test_docker_image_is_packed_by_docker_and_owned_by_the_invoking_user(ccd, tmp_path, monkeypatch):
+    import os
+    import subprocess
+
+    from ccd.backends import firecracker as fc
+
+    cache, toml = _firecracker_cache(tmp_path, monkeypatch, stamp=False)  # nothing built yet
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd if isinstance(cmd, list) else cmd.split())
+        if cmd[:2] == ["docker", "run"]:
+            (cache / fc.TMP_ROOTFS).write_bytes(b"squashfs")
+        return subprocess.CompletedProcess(cmd, 0, stdout="sha256:abc\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    code, _ = ccd("build", toml='[build]\nbackend = "docker"\n\n[run]\nbackend = "firecracker"\n' + toml)
+
+    assert code == 0
+    run = next(cmd for cmd in commands if cmd[:2] == ["docker", "run"])
+    assert f"chown {os.getuid()}:{os.getgid()} /out/{fc.TMP_ROOTFS}" in run[-1]
+    assert (cache / "rootfs.squashfs").exists()

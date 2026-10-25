@@ -4,44 +4,10 @@ import shutil
 import subprocess
 import sys
 
-from ccd.config import FEATURE_BUILD_ARGS, VERSION_BUILD_ARGS, BuildConfig
+from ccd.backends.common import to_docker_build_args
 from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, RunRequest
 
 logger = logging.getLogger(__name__)
-
-
-def to_docker_build_args(config: BuildConfig, extra_args: list[str]) -> list[str]:
-    """Produce the full list of docker-build flag tokens."""
-    result: list[str] = [*extra_args]
-
-    if config.force:
-        logger.debug("Force flag set, disabling Docker layer caching")
-        result.append("--no-cache")
-
-    flags = config.feature_flags()
-    if flags is not None:
-        for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
-            result.extend(["--build-arg", f"{build_arg}={'1' if flags[feature] else '0'}"])
-
-    logger.debug("Setting NPM_CLI_MIN_RELEASE_AGE_DAYS=%s", config.npm_min_release_age_days)
-    result.extend(["--build-arg", f"NPM_CLI_MIN_RELEASE_AGE_DAYS={config.npm_min_release_age_days}"])
-
-    if config.npm_audit_ignore_components:
-        logger.debug("Setting NPM_AUDIT_IGNORE_COMPONENTS=%s", config.npm_audit_ignore_components)
-        result.extend(["--build-arg", f"NPM_AUDIT_IGNORE_COMPONENTS={','.join(sorted(config.npm_audit_ignore_components))}"])
-    if config.npm_audit_force_fix_components:
-        logger.debug("Setting NPM_AUDIT_FORCE_FIX_COMPONENTS=%s", config.npm_audit_force_fix_components)
-        result.extend(["--build-arg", f"NPM_AUDIT_FORCE_FIX_COMPONENTS={','.join(sorted(config.npm_audit_force_fix_components))}"])
-    if config.npm_min_release_age_ignore_components:
-        logger.debug("Setting NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS=%s", config.npm_min_release_age_ignore_components)
-        result.extend(["--build-arg", f"NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS={','.join(sorted(config.npm_min_release_age_ignore_components))}"])
-
-    for component, build_arg in sorted(VERSION_BUILD_ARGS.items()):
-        if component in config.versions:
-            logger.debug("Setting %s=%s", build_arg, config.versions[component])
-            result.extend(["--build-arg", f"{build_arg}={config.versions[component]}"])
-
-    return result
 
 
 def volume_args(request: RunRequest) -> list[str]:
@@ -134,8 +100,8 @@ class DockerBackend(Backend):
         except subprocess.CalledProcessError as e:
             raise BackendError(f"Attach failed with exit code {e.returncode}") from e
 
-    def image_formats(self) -> set[str]:
-        return {"docker-daemon"}
+    def image_formats(self) -> list[str]:
+        return ["docker-daemon"]
 
     def list_running(self) -> list[str]:
         cmd = ["docker", "ps", "--format", "{{.Names}}"]

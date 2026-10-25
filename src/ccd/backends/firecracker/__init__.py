@@ -12,8 +12,9 @@ from pathlib import Path
 from ccd.backends.firecracker import net as hostnet
 from ccd.backends.firecracker import session as agent_session
 from ccd.backends.firecracker import vm as microvm
+from ccd.backends.firecracker.engines import ENGINES, Engine
 from ccd.backends.firecracker.prune import prune as prune_leftovers
-from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, ImageSource, RunRequest, timed
+from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, RunRequest, timed
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ PACK_SCRIPT = (
     'for e in $(ls -A /); do case "$e" in proc|sys|dev|out|.dockerenv) ;; *) set -- "$@" "/$e" ;; esac; done; '
     'mksquashfs "$@" /out/{tmp} -comp zstd -Xcompression-level 3 -b 128K -processors "$(nproc)" -noappend -no-progress'
     ' -p "proc d 755 0 0" -p "sys d 755 0 0" -p "dev d 755 0 0" -e etc/resolv.conf etc/hosts etc/hostname; '
-    "ls -la /out/{tmp}; chown {uid}:{gid} /out/{tmp}"
+    "ls -la /out/{tmp}; {chown}"
 )
 
 
@@ -79,25 +80,25 @@ class FirecrackerBackend(Backend):
             'set [build] backend = "docker" (the image is handed over to firecracker automatically)'
         )
 
-    def import_image(self, source: ImageSource, request: BuildRequest) -> None:
+    def accepted_formats(self) -> list[str]:
+        return list(ENGINES)
+
+    def import_image(self, fmt: str, location: str | Path, request: BuildRequest) -> None:
         """Produce the base rootfs (+ guest kernel) in the cache dir from an image built elsewhere."""
         cache = cache_dir(request.options)
         cache.mkdir(parents=True, exist_ok=True)  # created as the invoking user, not root
 
-        if "docker-daemon" not in source.formats:
-            raise BackendError("The firecracker backend can only import images from a local Docker daemon")
-        self._rootfs_via_docker(source.name, cache, request)
+        self._rootfs_from(ENGINES[fmt], str(location), cache, request)
         self._ensure_kernel(cache, request.options.get("kernel_url"))
         logger.info("rootfs ready: %s", cache / ROOTFS_NAME)
 
     @staticmethod
-    def _rootfs_via_docker(image: str, cache: Path, request: BuildRequest) -> None:
-        """Fast path: add the VM layer as a normal cached image, then pack it straight into the cache dir (no export pass)."""
+    def _rootfs_from(engine: Engine, image: str, cache: Path, request: BuildRequest) -> None:
+        """Add the VM layer as a normal cached image, then pack it straight into the cache dir (no export pass)."""
         rootfs, stamp = cache / ROOTFS_NAME, cache / "rootfs.image-id"
-        inspect = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", image], capture_output=True, text=True, check=False)
-        image_id = inspect.stdout.strip()
+        image_id = engine.image_id(image)
         if not image_id:
-            raise BackendError(f"Docker image '{image}' not found; build it first")
+            raise BackendError(f"Image '{image}' not found; build it first")
         # The stamp covers the inputs we control as well as the image: editing ccd-init or Dockerfile.rootfs must rebuild
         stamp_value = f"{image_id}:{assets_hash()}"
         if rootfs.exists() and stamp.exists() and stamp.read_text() == stamp_value and not request.config.force:
@@ -105,20 +106,13 @@ class FirecrackerBackend(Backend):
             return
 
         vm_image = f"{image}-vm"
-        build = ["docker", "build", "-t", vm_image, "--build-arg", f"BASE_IMAGE={image}", "-f", str(ASSETS / "Dockerfile.rootfs")]
-        if request.config.force:
-            build.append("--no-cache")
-        build.append(str(ASSETS))
-
-        # mksquashfs runs inside the container and writes directly into the mounted cache dir, owned by the invoking user.
-        pack_script = PACK_SCRIPT.format(tmp=TMP_ROOTFS, uid=os.getuid(), gid=os.getgid())
-        pack = ["docker", "run", "--rm", "--user", "root", "--network", "none", "--entrypoint", "sh", "-v", f"{cache}:/out", vm_image, "-c", pack_script]
-
+        # mksquashfs runs inside the container and writes directly into the mounted cache dir
+        pack_script = PACK_SCRIPT.format(tmp=TMP_ROOTFS, chown=engine.chown(f"/out/{TMP_ROOTFS}"))
         try:
             with timed("VM layer image", logger):
-                subprocess.run(build, check=True)
+                engine.add_vm_layer(image, vm_image, ASSETS / "Dockerfile.rootfs", ASSETS, request.config.force)
             with timed("Pack squashfs", logger):
-                subprocess.run(pack, check=True)
+                engine.pack(vm_image, cache, pack_script)
         except subprocess.CalledProcessError as e:
             (cache / TMP_ROOTFS).unlink(missing_ok=True)
             raise BackendError(f"Rootfs build failed with exit code {e.returncode}") from e

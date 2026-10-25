@@ -1,6 +1,7 @@
 """End-to-end harness: drives the real `ccd` CLI (ccd.ccd.main) against recording fake backends."""
 
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -28,15 +29,32 @@ class RecordingBackend(plugin.Backend):
     def list_running(self):
         return list(self.running)
 
+    offers = ["fake-native"]  # builder side
+    accepts = ["fake-native"]  # runner side
+    import_fails = False
+
     def image_formats(self):
-        return {"fake-native"}
+        return list(self.offers)
+
+    def accepted_formats(self):
+        return list(self.accepts)
+
+    @contextmanager
+    def provide_image(self, fmt, request):
+        CALLS.append((self.name, "provide", fmt))
+        try:
+            yield request.image_name
+        finally:
+            CALLS.append((self.name, "release", fmt))
+
+    def import_image(self, fmt, location, request):
+        CALLS.append((self.name, "import", (fmt, location)))
+        if self.import_fails:
+            raise plugin.BackendError("import failed")
 
     def prune(self, options, dry_run):
         CALLS.append((self.name, "prune", dry_run))
         return ["removed leftover"]
-
-    def import_image(self, source, request):
-        CALLS.append((self.name, "import", source))
 
 
 class FakeBuilder(RecordingBackend):
@@ -50,8 +68,7 @@ class FakeRunner(RecordingBackend):
 class FakeDockerLike(RecordingBackend):
     name = "fake-docker"
 
-    def image_formats(self):
-        return {"docker-daemon"}
+    offers = ["docker-daemon"]
 
 
 @pytest.fixture

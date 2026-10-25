@@ -10,7 +10,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from importlib import import_module
 from importlib.metadata import entry_points
@@ -71,17 +71,6 @@ class AttachRequest:
     options: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
-class ImageSource:
-    """An image handed from the build backend to a different run backend.
-
-    `formats` lists the native forms the image is already available in (e.g. "docker-daemon").
-    """
-
-    name: str
-    formats: set[str]
-
-
 class Backend(ABC):
     """A runtime that can build, run and attach to ccd environments."""
 
@@ -110,13 +99,36 @@ class Backend(ABC):
         """Remove leftovers of dead runs (or only list them when dry_run); returns what was or would be done."""
         return []
 
-    def image_formats(self) -> set[str]:
-        """Native image forms this backend's builds are available in without exporting (e.g. {"docker-daemon"})."""
-        return set()
+    def image_formats(self) -> list[str]:
+        """Builder side: formats this backend's builds can be provided in, cheapest first (e.g. ["docker-daemon"])."""
+        return []
 
-    def import_image(self, source: ImageSource, request: BuildRequest) -> None:
-        """Make an image built by another backend runnable by this backend (according to source.formats)."""
+    def provide_image(self, fmt: str, request: BuildRequest) -> AbstractContextManager[str | Path]:
+        """Builder side: make the built image available in `fmt` and yield where it is (an image name or a path).
+        Whatever was set up is released when the block exits. In-place formats need no work: the image is addressed by name."""
+        return nullcontext(request.image_name)
+
+    def accepted_formats(self) -> list[str]:
+        """Runner side: formats this backend can import, best first."""
+        return []
+
+    def import_image(self, fmt: str, location: str | Path, request: BuildRequest) -> None:
+        """Runner side: make an image built by another backend, available as `fmt` at `location`, runnable by this backend."""
         raise BackendError(f"Backend '{self.name}' cannot import images")
+
+
+def hand_over(builder: Backend, runner: Backend, builder_request: BuildRequest, runner_request: BuildRequest) -> str:
+    """Hand an image from its builder to a different run backend in the first format the runner accepts and the builder offers."""
+    offered, accepted = builder.image_formats(), runner.accepted_formats()
+    fmt = next((f for f in accepted if f in offered), None)
+    if fmt is None:
+        raise BackendError(
+            f"Backend '{runner.name}' cannot run images built by '{builder.name}' "
+            f"({builder.name} offers: {', '.join(offered) or 'nothing'}; {runner.name} accepts: {', '.join(accepted) or 'nothing'})"
+        )
+    with builder.provide_image(fmt, builder_request) as location:
+        runner.import_image(fmt, location, runner_request)
+    return fmt
 
 
 @dataclass

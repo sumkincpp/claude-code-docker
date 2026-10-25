@@ -22,11 +22,11 @@ from ccd.plugin import (
     Backend,
     BackendError,
     BuildRequest,
-    ImageSource,
     ResolvedMount,
     RunRequest,
     available_backends,
     get_backend,
+    hand_over,
     timed,
 )
 
@@ -285,10 +285,15 @@ def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: lis
         return
 
     runner, runner_options = load_backend(run_name, run_config)
-    source = ImageSource(name=IMAGE_NAME, formats=builder.image_formats())
     logger.info("Handing image from '%s' to '%s'", build_name, run_name)
     with timed(f"Import ({run_name})", logger):
-        runner.import_image(source, BuildRequest(image_name=IMAGE_NAME, config=config, options=runner_options))
+        fmt = hand_over(
+            builder,
+            runner,
+            BuildRequest(image_name=IMAGE_NAME, config=config, options=builder_options),
+            BuildRequest(image_name=IMAGE_NAME, config=config, options=runner_options),
+        )
+    logger.info("Handed over as '%s'", fmt)
 
 
 def main() -> None:
