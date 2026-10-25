@@ -618,3 +618,82 @@ def test_docker_user_flags_are_unchanged(ccd, tmp_path, monkeypatch):
 
     plain, as_root = [cmd for cmd in commands if cmd[:2] == ["docker", "run"]]
     assert "--user" not in plain and as_root[as_root.index("--user") + 1] == "root" and "HOME=/home/user" not in as_root
+
+
+def test_command_after_double_dash_is_passed_to_the_backend(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", "-u", "root", "--", "pytest", "-q", "-k", "a b")
+
+    request = calls[0][2]
+    assert code == 0 and request.command == ["pytest", "-q", "-k", "a b"] and request.root is True  # arguments stay separate
+
+
+def test_dot_takes_a_command_too_and_without_one_the_shell_is_interactive(ccd):
+    code, calls = ccd(".", "--backend", "fake", "--home", "h", "--", "ls", "-l")
+    assert calls[0][2].command == ["ls", "-l"]
+
+    _, calls = ccd(".", "--backend", "fake", "--home", "h")
+    assert calls[1][2].command == []
+
+
+def test_exit_code_of_the_command_is_the_exit_code_of_ccd(ccd, tmp_path, monkeypatch):
+    from conftest import RecordingBackend
+
+    (tmp_path / "app").mkdir()
+    monkeypatch.setattr(RecordingBackend, "run_code", 3)
+
+    code, _ = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", "--", "false")
+
+    assert code == 3
+
+
+def test_command_banner_goes_to_stderr_so_stdout_stays_the_commands(ccd, tmp_path, capsys):
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", "--", "echo", "hi")
+    quiet = capsys.readouterr()
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake")
+    shell = capsys.readouterr()
+
+    assert "Starting container" not in quiet.out and "Starting container" in quiet.err
+    assert "Starting container" in shell.out  # the interactive shell is unchanged
+
+
+def test_double_dash_keeps_its_meaning_for_build(ccd):
+    _, calls = ccd("build", "--", "--progress=plain", toml='[run]\nbackend = "fake"\n')
+
+    assert calls[0][2].extra_args == ["--", "--progress=plain"]  # exactly what argparse handed over before commands existed
+
+
+def test_docker_runs_a_command_without_a_terminal_and_returns_its_exit_code(ccd, tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 7, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    (tmp_path / "app").mkdir()
+
+    code, _ = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "docker", "--", "pytest", "-q")
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "docker")
+
+    command_run, shell_run = [cmd for cmd in commands if cmd[:2] == ["docker", "run"]]
+    assert code == 7  # not "Container run failed": the exit code is passed through
+    assert "-i" in command_run and "-it" not in command_run and "-t" not in command_run  # pytest has no terminal on stdin
+    assert command_run[-3:] == ["ccd", "pytest", "-q"]  # image, then the command
+    assert "-it" in shell_run and shell_run[-1] == "ccd"
+
+
+def test_podman_command_runs_as_container_root_after_the_image(ccd, tmp_path, monkeypatch):
+    commands = _podman(monkeypatch)
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "podman", "--", "make", "test")
+
+    run = next(cmd for cmd in commands if cmd[:2] == ["podman", "run"])
+    assert run[-3:] == ["localhost/ccd", "make", "test"] and "--user" in run

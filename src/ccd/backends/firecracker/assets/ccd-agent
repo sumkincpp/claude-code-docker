@@ -2,7 +2,12 @@
 """Guest agent for ccd Firecracker VMs: runs interactive sessions on a pty for the host over vsock.
 
 Protocol (port 1024): the host sends one JSON line, then for a session both sides stream raw terminal bytes.
-  {"op": "session", "user": "root|user", "term": "xterm-256color", "rows": 40, "cols": 120}   -> replies "OK <sid>\\n"
+  {"op": "session", "user": "root|user", "term": "xterm-256color", "rows": 40, "cols": 120}   -> replies "OK <sid> command\\n"
+      (the words after the id name features; "command" means "argv" and "tty" are understood. An older agent replies "OK <sid>"
+      and ignores them, which the host uses to refuse running a command it cannot honour)
+      optional: "argv": ["pytest", "-q"] runs that command instead of a login shell; "tty": false uses pipes (stdout and stderr
+      merged, no CR/LF translation) and the host half-closing its side means end of input
+  {"op": "status", "sid": <sid>}                                                              -> replies "<exit code>\\n" once the session has ended
   {"op": "resize", "sid": <sid>, "rows": r, "cols": c}                                       (separate connection)
   {"op": "poweroff"}
 """
@@ -19,9 +24,10 @@ import termios
 import threading
 
 PORT = 1024
-ENTRYPOINT = "cd /app 2>/dev/null; export TERM={term}; exec /usr/local/bin/ccd-entrypoint bash -l"
+ENTRYPOINT = "cd /app 2>/dev/null; export TERM={term}; exec /usr/local/bin/ccd-entrypoint {command}"
 
 sessions: dict[int, int] = {}  # session id -> pty master fd
+results: dict[int, int] = {}  # session id -> exit code of the ended session
 lock = threading.Lock()
 counter = 0
 
@@ -44,48 +50,76 @@ def read_line(conn: socket.socket) -> bytes:
 
 def session_argv(request: dict) -> list[str]:
     user = "root" if request.get("user") == "root" else "user"
-    return ["su", "-s", "/bin/bash", "-l", user, "-c", ENTRYPOINT.format(term=shlex.quote(request.get("term") or "linux"))]
+    command = shlex.join(request.get("argv") or ["bash", "-l"])
+    return ["su", "-s", "/bin/bash", "-l", user, "-c", ENTRYPOINT.format(term=shlex.quote(request.get("term") or "linux"), command=command)]
+
+
+def exit_code(returncode: int) -> int:
+    return 128 - returncode if returncode < 0 else returncode  # killed by signal N -> 128+N, as shells report it
 
 
 def run_session(conn: socket.socket, request: dict) -> None:
     global counter
     argv = session_argv(request)
+    use_tty = request.get("tty", True)
 
-    master, slave = os.openpty()
-    set_size(master, request.get("rows"), request.get("cols"))
-    # New session with the pty as controlling terminal: job control, Ctrl-C and signals work
-    proc = subprocess.Popen(
-        argv, stdin=slave, stdout=slave, stderr=slave, start_new_session=True, close_fds=True,
-        preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0),
-    )
-    os.close(slave)
+    if use_tty:
+        master, slave = os.openpty()
+        set_size(master, request.get("rows"), request.get("cols"))
+        # New session with the pty as controlling terminal: job control, Ctrl-C and signals work
+        proc = subprocess.Popen(
+            argv, stdin=slave, stdout=slave, stderr=slave, start_new_session=True, close_fds=True,
+            preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0),
+        )
+        os.close(slave)
+        out_fd = in_fd = master
+    else:
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
+        out_fd, in_fd = proc.stdout.fileno(), proc.stdin.fileno()
     with lock:
         counter += 1
         sid = counter
-        sessions[sid] = master
+        if use_tty:
+            sessions[sid] = master  # only pty sessions can be resized
+    finished = False
+    reading_host = True
     try:
-        conn.sendall(f"OK {sid}\n".encode())
+        conn.sendall(f"OK {sid} command\n".encode())
         while True:
-            readable, _, _ = select.select([conn, master], [], [])
-            if master in readable:
+            readable, _, _ = select.select([out_fd] + ([conn] if reading_host else []), [], [])
+            if out_fd in readable:
                 try:
-                    data = os.read(master, 65536)
+                    data = os.read(out_fd, 65536)
                 except OSError:  # EIO once the session's last process has gone
                     data = b""
                 if not data:
+                    finished = True
                     break
                 conn.sendall(data)
             if conn in readable:
                 data = conn.recv(65536)
-                if not data:  # host went away
+                if data:
+                    os.write(in_fd, data)
+                elif use_tty:  # host went away
                     proc.send_signal(signal.SIGHUP)
                     break
-                os.write(master, data)
+                else:  # end of input: the command may still be running and producing output
+                    reading_host = False
+                    proc.stdin.close()
     finally:
         with lock:
             sessions.pop(sid, None)
-        os.close(master)
-        proc.wait()
+        if use_tty:
+            os.close(master)
+        else:
+            if not finished and proc.poll() is None:  # the host connection broke while the command was running
+                proc.kill()
+            proc.stdout.close()
+            if not proc.stdin.closed:
+                proc.stdin.close()
+        returncode = exit_code(proc.wait())
+        with lock:
+            results[sid] = returncode
 
 
 def handle(conn: socket.socket) -> None:
@@ -102,6 +136,10 @@ def handle(conn: socket.socket) -> None:
                 fd = sessions.get(request.get("sid"))
             if fd is not None:
                 set_size(fd, request.get("rows"), request.get("cols"))
+        elif op == "status":
+            with lock:
+                code = results.get(request.get("sid"))
+            conn.sendall(b"ERR\n" if code is None else f"{code}\n".encode())
         elif op == "poweroff":
             subprocess.run(["poweroff", "-f"], check=False)
     except (OSError, ValueError) as e:

@@ -170,8 +170,8 @@ def prompt_container_name(backend: Backend):
             print("Invalid input. Please enter a valid container name or number.")
 
 
-def run_container(backend: Backend, params: RunParameters, backend_options: dict | None = None) -> None:
-    """Resolve mounts and hand the run off to the backend"""
+def run_container(backend: Backend, params: RunParameters, backend_options: dict | None = None) -> int:
+    """Resolve mounts and hand the run off to the backend; returns the exit code of the shell or command"""
     logger.info("Preparing to run container: %s", params.image_name)
 
     # Convert to absolute paths
@@ -206,7 +206,8 @@ def run_container(backend: Backend, params: RunParameters, backend_options: dict
 
     container_name = get_next_free_container_name(backend, app_path.name)
 
-    print(f"Starting container '{container_name}'...")
+    # A one-off command's stdout belongs to the command (it may be piped), so the banner goes to stderr
+    print(f"Starting container '{container_name}'...", file=sys.stderr if params.command else sys.stdout)
 
     logger.info("Starting container with:")
     logger.info("  Backend: %s", backend.name)
@@ -216,16 +217,20 @@ def run_container(backend: Backend, params: RunParameters, backend_options: dict
     logger.info("  CPU limit: %s", params.cpus)
     logger.info("  User: %s", "root" if params.root else "user")
 
-    backend.run(
-        RunRequest(
-            image_name=params.image_name,
-            name=container_name,
-            memory=params.memory,
-            cpus=params.cpus,
-            root=params.root,
-            mounts=mounts,
-            options=backend_options or {},
+    return (
+        backend.run(
+            RunRequest(
+                image_name=params.image_name,
+                name=container_name,
+                memory=params.memory,
+                cpus=params.cpus,
+                root=params.root,
+                mounts=mounts,
+                options=backend_options or {},
+                command=params.command,
+            )
         )
+        or 0
     )
 
 
@@ -371,6 +376,15 @@ def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: lis
     logger.info("Handed over as '%s'", fmt)
 
 
+def split_command(argv: list[str]) -> tuple[list[str], list[str]]:
+    """Split `ccd . -- pytest -q` into ccd's own arguments and the one-off command. Only `.` and `run` take a command;
+    for the other subcommands `--` keeps its meaning (extra build arguments)."""
+    if "--" not in argv:
+        return argv, []
+    head, command = argv[: argv.index("--")], argv[argv.index("--") + 1 :]
+    return (head, command) if any(arg in (".", "run") for arg in head) else (argv, [])
+
+
 def main() -> None:
     """Main entry point for the ccd command line tool"""
     parser = argparse.ArgumentParser(description="Run ccd containers on pluggable backends")
@@ -457,7 +471,9 @@ def main() -> None:
     prune_parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True, help="Only list what would be removed (default); --no-dry-run removes it")
     add_backend_arg(prune_parser)
 
-    args, unknown = parser.parse_known_args()
+    argv, command = split_command(sys.argv[1:])
+    args, unknown = parser.parse_known_args(argv)
+    args.run_command = command
     if getattr(args, "run_user", None) is not None:
         args.root = args.run_user == "root"  # -u wins over --root when both are given
 
@@ -484,7 +500,9 @@ def main() -> None:
             backend, backend_options = load_backend(run_backend_name(args, run_config), run_config)
             app_folder = "." if args.command == "." else None
             params = RunParameters.from_args(IMAGE_NAME, args, run_config=run_config, app_folder=app_folder)
-            run_container(backend, params, backend_options)
+            code = run_container(backend, params, backend_options)
+            if code:
+                sys.exit(code)
         elif args.command == "prune":
             backend, backend_options = load_backend(run_backend_name(args, run_config), run_config)
             done = backend.prune(backend_options, args.dry_run)

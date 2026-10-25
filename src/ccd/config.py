@@ -265,6 +265,7 @@ class RunParameters:
     cpus: str = "2"
     root: bool = False
     extra_mounts: List[MountConfig] = field(default_factory=list)
+    command: List[str] = field(default_factory=list)
 
     @classmethod
     def from_args(cls, image_name: str, args: argparse.Namespace, run_config: "RunConfig | None" = None, app_folder: str | None = None) -> "RunParameters":
@@ -297,4 +298,5 @@ class RunParameters:
             cpus=cpus,
             root=args.root,
             extra_mounts=run_config.mounts if run_config is not None else [],
+            command=list(getattr(args, "run_command", [])),
         )

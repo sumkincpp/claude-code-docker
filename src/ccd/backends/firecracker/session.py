@@ -70,6 +70,17 @@ def _send(uds: Path, request: dict) -> None:
         pass
 
 
+def exit_status(uds: Path, sid: int) -> int:
+    """Exit code of an ended session; the agent keeps it, since the byte stream cannot carry it."""
+    try:
+        with connect(uds) as sock:
+            sock.sendall(json.dumps({"op": "status", "sid": sid}).encode() + b"\n")
+            reply = _read_line(sock).strip()
+        return int(reply)
+    except (OSError, ValueError):
+        return 255  # the agent is gone or did not know the session
+
+
 def poweroff(uds: Path) -> None:
     _send(uds, {"op": "poweroff"})
 
@@ -79,26 +90,38 @@ def _write_all(fd: int, data: bytes) -> None:
         data = data[os.write(fd, data) :]
 
 
-def run_interactive(uds: Path, root: bool) -> None:
-    """Attach the local terminal to a new session in the guest until it ends."""
+def run_interactive(uds: Path, root: bool, command: list[str] | None = None) -> int:
+    """Attach the local terminal to a new session in the guest until it ends; returns the session's exit code.
+
+    Without `command` it is a login shell on a pty. With one, it runs that command, on a pty only when both our stdin and
+    stdout are terminals; otherwise over pipes, so output can be piped or redirected and end of input reaches the command.
+    """
     stdin_fd, stdout_fd = sys.stdin.fileno(), sys.stdout.fileno()
     is_tty = os.isatty(stdin_fd)
+    use_pty = not command or (is_tty and os.isatty(stdout_fd))
     size = shutil.get_terminal_size() if os.isatty(stdout_fd) else None
 
     sock = connect(uds)
-    request = {"op": "session", "user": "root" if root else "user", "term": os.environ.get("TERM", "linux")}
+    request = {"op": "session", "user": "root" if root else "user", "term": os.environ.get("TERM", "linux"), "tty": use_pty}
+    if command:
+        request["argv"] = command
     if size:
         request.update(rows=size.lines, cols=size.columns)
     sock.sendall(json.dumps(request).encode() + b"\n")
     reply = _read_line(sock).split()
-    if len(reply) != 2 or reply[0] != b"OK":
+    if len(reply) < 2 or reply[0] != b"OK":
         sock.close()
         raise BackendError("The guest agent refused the session")
     sid = int(reply[1])
+    if command and b"command" not in reply[2:]:
+        # An agent from before one-off commands ignores them and starts a login shell: end that session instead of
+        # letting the user sit in a shell that never ran their command
+        sock.close()
+        raise BackendError("The guest agent in the VM rootfs is too old to run commands; run 'ccd build' to update it")
 
     # Terminal in raw mode: we forward every byte unchanged (Enter stays a carriage return, Ctrl-C reaches the guest)
-    saved = termios.tcgetattr(stdin_fd) if is_tty else None
-    if is_tty:
+    saved = termios.tcgetattr(stdin_fd) if is_tty and use_pty else None
+    if saved is not None:
         tty.setraw(stdin_fd)
     # SIGWINCH wakes select() through a socketpair so resizes are forwarded immediately
     wake_r, wake_w = socket.socketpair()
@@ -118,6 +141,8 @@ def run_interactive(uds: Path, root: bool) -> None:
                     sock.sendall(data)
                 else:  # stdin closed (piped input): keep draining output
                     watching_stdin = False
+                    if not use_pty:
+                        sock.shutdown(socket.SHUT_WR)  # tells the command its input has ended
             if sock in readable:
                 data = sock.recv(65536)
                 if not data:
@@ -131,3 +156,4 @@ def run_interactive(uds: Path, root: bool) -> None:
         sock.close()
         if saved is not None:
             termios.tcsetattr(stdin_fd, termios.TCSADRAIN, saved)
+    return exit_status(uds, sid)

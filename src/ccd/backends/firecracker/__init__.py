@@ -166,7 +166,7 @@ class FirecrackerBackend(Backend):
         elif not kernel.exists():
             raise BackendError(f"No guest kernel at {kernel}; set kernel_url in the [firecracker] table of ccd.toml or place a vmlinux there")
 
-    def run(self, request: RunRequest) -> None:
+    def run(self, request: RunRequest) -> int:
         options = request.options
         cache = cache_dir(options)
         rootfs = cache / ROOTFS_NAME
@@ -238,14 +238,16 @@ class FirecrackerBackend(Backend):
             logger.info("  Kernel: %s", kernel)
             logger.info("  VM: %s  guest %s  host %s  tap %s via %s", request.name, guest_ip, host_ip, net.tap, net.iface)
             hostnet.setup(net)
-            self._run_agent_session(directory, config_path, request.root)
+            return self._run_agent_session(directory, config_path, request.root, request.command)
         finally:
             hostnet.teardown(net)
             microvm.VmRegistry.remove(directory)
 
     @staticmethod
-    def _run_agent_session(directory: Path, config_path: Path, root: bool) -> None:
-        """Boot the VM in the background (console -> console.log), run the session through the guest agent, then power off."""
+    def _run_agent_session(directory: Path, config_path: Path, root: bool, command: list[str]) -> int:
+        """Boot the VM in the background (console -> console.log), run the session (a shell, or the one-off command) through
+        the guest agent, then power off. Returns the session's exit code."""
+        code = 0
         log_path = directory / "console.log"
         uds = directory / "v.sock"
         with open(log_path, "wb") as log:
@@ -256,9 +258,10 @@ class FirecrackerBackend(Backend):
                         agent_session.wait_for_agent(uds, vmm)
                 except BackendError as e:
                     raise BackendError(f"{e}\n--- VM console (last lines) ---\n{microvm.tail(log_path)}") from e
-                agent_session.run_interactive(uds, root)
+                code = agent_session.run_interactive(uds, root, command)
             except KeyboardInterrupt:
                 logger.info("VM stopped by user")
+                code = 130
             finally:
                 if vmm.poll() is None:
                     agent_session.poweroff(uds)  # clean shutdown first so NFS clients flush; fall back to killing the VMM
@@ -267,6 +270,7 @@ class FirecrackerBackend(Backend):
                     except subprocess.TimeoutExpired:
                         vmm.kill()
                         vmm.wait()
+        return code
 
     def attach(self, request: AttachRequest) -> None:
         info = microvm.VmRegistry(cache_dir(request.options)).get(request.name)

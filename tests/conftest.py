@@ -21,8 +21,11 @@ class RecordingBackend(plugin.Backend):
     def build(self, request):
         CALLS.append((self.name, "build", request))
 
+    run_code = 0  # exit code the fake "environment" ends with
+
     def run(self, request):
         CALLS.append((self.name, "run", request))
+        return self.run_code
 
     def attach(self, request):
         CALLS.append((self.name, "attach", request))

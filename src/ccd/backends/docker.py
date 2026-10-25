@@ -55,12 +55,20 @@ class DockerBackend(Backend):
         except subprocess.CalledProcessError as e:
             raise BackendError(f"Build failed with exit code {e.returncode}") from e
 
-    def run(self, request: RunRequest) -> None:
-        """Run the Docker container with specified volumes and resource limits"""
+    @staticmethod
+    def terminal_flags(command: list[str]) -> list[str]:
+        """An interactive shell always gets a terminal. A one-off command only does when ccd itself is attached to one, so
+        piping its output or input (and running it from scripts) works."""
+        if not command:
+            return ["-it"]
+        return ["-i", "-t"] if sys.stdin.isatty() and sys.stdout.isatty() else ["-i"]
+
+    def run(self, request: RunRequest) -> int:
+        """Run the Docker container with specified volumes and resource limits; returns its exit code"""
         cmd = [
             self.cli,
             "run",
-            "-it",
+            *self.terminal_flags(request.command),
             "--rm",
             "--memory",
             request.memory,
@@ -78,20 +86,16 @@ class DockerBackend(Backend):
         ]
 
         cmd.extend(self.user_args(request.root, request.options))
-        cmd.extend([*volume_args(request), self.image_ref(request.image_name)])
+        cmd.extend([*volume_args(request), self.image_ref(request.image_name), *request.command])
 
         logger.info("  Full command: %s", " ".join(cmd))
 
+        logger.debug("Executing %s run command", self.cli)
         try:
-            logger.debug("Executing docker run command")
-            subprocess.run(cmd, check=True)
-            logger.info("Container execution completed successfully")
-
-        except subprocess.CalledProcessError as e:
-            raise BackendError(f"Container run failed with exit code {e.returncode}") from e
+            return subprocess.run(cmd, check=False).returncode
         except KeyboardInterrupt:
             logger.info("Container stopped by user")
-            sys.exit(0)
+            return 130
 
     def attach(self, request: AttachRequest) -> None:
         """Attach to a running Docker container"""

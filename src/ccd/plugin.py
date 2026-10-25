@@ -64,6 +64,7 @@ class RunRequest:
     root: bool
     mounts: list[ResolvedMount]
     options: dict[str, Any] = field(default_factory=dict)
+    command: list[str] = field(default_factory=list)  # one-off command to run instead of an interactive shell
 
 
 @dataclass
@@ -166,7 +167,8 @@ class Backend(ABC):
     def build(self, request: BuildRequest) -> None: ...
 
     @abstractmethod
-    def run(self, request: RunRequest) -> None: ...
+    def run(self, request: RunRequest) -> int | None:
+        """Run the environment until the shell or command ends; return its exit code (None counts as 0)."""
 
     @abstractmethod
     def attach(self, request: AttachRequest) -> None: ...
