@@ -106,6 +106,10 @@ class Backend(ABC):
     def list_running(self) -> list[str]:
         """Names of running environments, unfiltered."""
 
+    def prune(self, options: dict[str, Any], dry_run: bool) -> list[str]:
+        """Remove leftovers of dead runs (or only list them when dry_run); returns what was or would be done."""
+        return []
+
     def image_formats(self) -> set[str]:
         """Native image forms this backend's builds are available in without exporting (e.g. {"docker-daemon"})."""
         return set()

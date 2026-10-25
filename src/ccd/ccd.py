@@ -369,6 +369,10 @@ def main() -> None:
 
     command_parser.add_parser("backends", help="List installed backend plugins")
 
+    prune_parser = command_parser.add_parser("prune", help="Remove leftovers of dead runs (VM state, taps, exports, firewall rules)")
+    prune_parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True, help="Only list what would be removed (default); --no-dry-run removes it")
+    add_backend_arg(prune_parser)
+
     args, unknown = parser.parse_known_args()
     if getattr(args, "run_user", None) is not None:
         args.root = args.run_user == "root"  # -u wins over --root when both are given
@@ -396,6 +400,15 @@ def main() -> None:
             app_folder = "." if args.command == "." else None
             params = RunParameters.from_args(IMAGE_NAME, args, run_config=run_config, app_folder=app_folder)
             run_container(backend, params, backend_options)
+        elif args.command == "prune":
+            backend, backend_options = load_backend(run_backend_name(args, run_config), run_config)
+            done = backend.prune(backend_options, args.dry_run)
+            for line in done:
+                print(f"{'Would: ' if args.dry_run else ''}{line}")
+            if not done:
+                print("Nothing to prune")
+            elif args.dry_run:
+                print("Dry run: nothing was removed; use --no-dry-run to remove it")
         elif args.command == "attach":
             logger.debug("Executing attach command")
             backend, backend_options = load_backend(run_backend_name(args, run_config), run_config)

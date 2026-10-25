@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 # Docker hands out user-defined networks from 172.17.0.0/16 up to 172.31.0.0/16, so ccd stays out of that pool.
 # Whatever the range, /30 blocks that overlap a route or address the host already has are skipped (see first_free_index).
 NET_BASE = ipaddress.ip_network("10.111.111.0/24")
-LEGACY_NET_BASE = ipaddress.ip_network("172.30.0.0/16")  # earlier default; only prune still recognises it
 FALLBACK_DNS = ["1.1.1.1", "8.8.8.8"]
 
 
@@ -61,7 +60,11 @@ class VmNet:
 
     @property
     def nft_table(self) -> str:
-        return "ccd_" + re.sub(r"[^A-Za-z0-9]", "_", self.name)
+        return nft_table_name(self.name)
+
+
+def nft_table_name(vm_name: str) -> str:
+    return "ccd_" + re.sub(r"[^A-Za-z0-9]", "_", vm_name)
 
 
 def addresses(index: int, base_net: ipaddress.IPv4Network = NET_BASE) -> tuple[str, str]:

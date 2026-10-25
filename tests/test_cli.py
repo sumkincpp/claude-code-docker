@@ -94,6 +94,60 @@ def test_backends_command_lists_shipped_plugins(ccd, capsys):
     assert {"docker", "firecracker"} <= set(capsys.readouterr().out.split())
 
 
+def test_prune_is_a_dry_run_unless_told_otherwise(ccd, capsys):
+    code, calls = ccd("prune", "--backend", "fake")
+
+    assert (code, calls) == (0, [("fake", "prune", True)])
+    out = capsys.readouterr().out
+    assert "Would: removed leftover" in out and "--no-dry-run" in out
+
+
+def test_prune_no_dry_run_removes(ccd, capsys):
+    _, calls = ccd("prune", "--no-dry-run", "--backend", "fake")
+
+    assert calls == [("fake", "prune", False)]
+    assert "Would" not in capsys.readouterr().out
+
+
+def test_firecracker_prune_removes_only_what_belongs_to_dead_vms(ccd, tmp_path, monkeypatch, capsys):
+    import json
+    import os
+
+    from ccd.backends.firecracker import prune as fc_prune
+
+    vms = tmp_path / "fc" / "vms"
+    for name, index, pid in (("ccd-app-01", 0, os.getpid()), ("ccd-app-02", 1, 2**22 + 1)):  # 01 is "running" (this process), 02 is dead
+        (vms / name).mkdir(parents=True)
+        info = {"name": name, "index": index, "pid": pid, "guest_ip": f"10.111.111.{4 * index + 2}"}
+        (vms / name / "info.json").write_text(json.dumps(info))
+    dead_vmm = f"firecracker --no-api --config-file {vms}/ccd-app-02/vm.json"
+    exports = "/home/u/app\n\t\t10.111.111.2(rw,sync)\n\t\t10.111.111.6(rw,sync)\n/srv/other\n\t\t10.1.1.1(rw)\n"
+    state = fc_prune.HostState(
+        taps=["ccdtap0", "ccdtap1"],
+        nft_tables=["ccd_ccd_app_01", "ccd_ccd_app_02"],
+        docker_user_rules=["-A DOCKER-USER -i ccdtap0 -j ACCEPT", "-A DOCKER-USER -i ccdtap1 -j ACCEPT"],
+        exports=fc_prune.parse_exports(exports),
+        mounts=[vms / "ccd-app-01" / "files" / "f0", vms / "ccd-app-02" / "files" / "f0"],
+        processes=[(111, f"firecracker --config-file {vms}/ccd-app-01/vm.json"), (222, dead_vmm)],
+    )
+    monkeypatch.setattr(fc_prune, "read_host_state", lambda root: state)
+    monkeypatch.setattr("ccd.backends.firecracker.FirecrackerBackend.check_available", lambda self: None)  # no KVM needed to list
+    options = f'[firecracker]\ncache_dir = "{tmp_path / "fc"}"\n'
+
+    code, _ = ccd("prune", "--backend", "firecracker", toml=options)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "stop orphaned VM process 222" in out and "process 111" not in out
+    assert "unexport /home/u/app from 10.111.111.6" in out and "10.111.111.2" not in out and "10.1.1.1" not in out
+    assert "delete tap ccdtap1" in out and "ccdtap0" not in out
+    assert "delete nft table ccd_ccd_app_02" in out and "ccd_ccd_app_01" not in out
+    assert "ccdtap1 -j ACCEPT" in out and "ccdtap0 -j" not in out
+    assert str(vms / "ccd-app-02" / "files" / "f0") in out and str(vms / "ccd-app-01" / "files") not in out
+    assert f"remove state dir {vms / 'ccd-app-02'}" in out and f"{vms / 'ccd-app-01'}" not in out.replace("process", "")
+    assert (vms / "ccd-app-02").exists()  # dry run changes nothing
+
+
 def test_vm_addresses_avoid_networks_the_host_already_uses():
     from ccd.backends.firecracker import net
 

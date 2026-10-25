@@ -12,6 +12,7 @@ from pathlib import Path
 from ccd.backends.firecracker import net as hostnet
 from ccd.backends.firecracker import session as agent_session
 from ccd.backends.firecracker import vm as microvm
+from ccd.backends.firecracker.prune import prune as prune_leftovers
 from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, ImageSource, RunRequest, timed
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,9 @@ class FirecrackerBackend(Backend):
             agent_session.run_interactive(info.vsock_path, request.root)
         except OSError as e:
             raise BackendError(f"Cannot reach the agent of '{request.name}': {e}") from e
+
+    def prune(self, options: dict, dry_run: bool) -> list[str]:
+        return prune_leftovers(cache_dir(options), dry_run, vm_subnet(options))
 
     def list_running(self) -> list[str]:
         return [vm.name for vm in microvm.VmRegistry(cache_dir({})).live()]

@@ -31,6 +31,10 @@ class RecordingBackend(plugin.Backend):
     def image_formats(self):
         return {"fake-native"}
 
+    def prune(self, options, dry_run):
+        CALLS.append((self.name, "prune", dry_run))
+        return ["removed leftover"]
+
     def import_image(self, source, request):
         CALLS.append((self.name, "import", source))
 
