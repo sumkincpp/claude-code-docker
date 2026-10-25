@@ -16,7 +16,7 @@ except ImportError:
     except ImportError:
         tomllib = None  # type: ignore[assignment]
 
-IMAGE_NAME = "claude-code"
+IMAGE_NAME = "ccd"
 IMAGE_HOME_FOLDER = "/home/ubuntu"
 # ccdXX
 CONTAINER_NAME_BASE = "ccd"
@@ -570,7 +570,7 @@ def run_container(params: RunParameters):
 
 def attach_container(root: bool) -> None:
     """Attach to a running Docker container"""
-    logger.info("Attaching to running Docker container: claude-code-container")
+    logger.info("Attaching to running Docker container: ccd-container")
 
     container_name = prompt_container_name()
 
@@ -608,7 +608,7 @@ def add_container_args(parser: argparse.ArgumentParser, home_folder: Path) -> ar
 
 def main() -> None:
     """Main entry point for the ccd command line tool"""
-    parser = argparse.ArgumentParser(description="Run claude-code Docker container")
+    parser = argparse.ArgumentParser(description="Run ccd Docker container")
 
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity level (can be used multiple times: -v, -vv, -vvv)")
 
@@ -640,9 +640,10 @@ def main() -> None:
         help="Minimum age in days for npm CLI package resolution when using tags such as latest (default: 7)",
     )
     build_parser.add_argument(
-        "--npm-min-release-age-ignore-components",
+        "--no-cooldown",
         dest="npm_min_release_age_ignore_components",
-        help="Comma-separated npm CLI components exempt from the minimum release age check",
+        metavar="COMPONENTS",
+        help="Comma-separated CLI components to exempt from the release-age cooldown (e.g. pi,gemini)",
     )
     build_parser.add_argument(
         "--npm-audit-ignore-components",
