@@ -64,6 +64,7 @@ ARG NPM_VERSION=latest
 ARG PNPM_VERSION=latest
 RUN --mount=type=cache,id=npm-cache,uid=1000,gid=1000,target=/home/user/.npm \
     . $NVM_DIR/nvm.sh && \
+    export NODE_USE_ENV_PROXY=1 && \
     NPM_RESOLVED=$(node /home/user/.local/bin/resolve-version.mjs npm ${NPM_VERSION} ${NPM_CLI_MIN_RELEASE_AGE_DAYS}) && \
     npm install -g npm@${NPM_RESOLVED} && \
     PNPM_RESOLVED=$(node /home/user/.local/bin/resolve-version.mjs pnpm ${PNPM_VERSION} ${NPM_CLI_MIN_RELEASE_AGE_DAYS}) && \
