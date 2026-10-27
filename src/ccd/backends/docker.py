@@ -25,6 +25,7 @@ class DockerBackend(Backend):
     name = "docker"
     cli = "docker"  # the command line tool; the podman backend reuses everything with its own
     image_prefix = ""  # podman needs "localhost/" to address images that are not from a registry
+    runtime_args: list[str] = []  # extra `run` flags selecting the OCI runtime, e.g. gVisor's --runtime runsc
 
     def image_ref(self, image_name: str) -> str:
         return f"{self.image_prefix}{image_name}"
@@ -70,6 +71,7 @@ class DockerBackend(Backend):
             "run",
             *self.terminal_flags(request.command),
             "--rm",
+            *self.runtime_args,
             "--memory",
             request.memory,
             "--cpus",

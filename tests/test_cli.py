@@ -714,3 +714,74 @@ def test_podman_command_runs_as_container_root_after_the_image(ccd, tmp_path, mo
 
     run = next(cmd for cmd in commands if cmd[:2] == ["podman", "run"])
     assert run[-3:] == ["localhost/ccd", "make", "test"] and "--user" in run
+
+
+def test_gvisor_docker_runs_the_docker_image_with_the_runsc_runtime(ccd, tmp_path, monkeypatch):
+    import subprocess
+
+    commands = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: commands.append(cmd) or subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    for backend in ("docker.DockerBackend", "gvisor.GVisorDockerBackend"):  # the builder and the runner
+        monkeypatch.setattr(f"ccd.backends.{backend}.check_available", lambda self: None)
+    (tmp_path / "app").mkdir()
+
+    code, _ = ccd("build", toml='[build]\nbackend = "docker"\n\n[run]\nbackend = "gvisor-docker"\n')  # handed over without a copy
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "gvisor-docker", "--", "true")
+
+    run = next(cmd for cmd in commands if cmd[:2] == ["docker", "run"])
+    assert code == 0 and run[run.index("--runtime") + 1] == "runsc" and run[-2:] == ["ccd", "true"]
+
+
+def test_gvisor_podman_runs_localhost_images_with_the_runsc_runtime(ccd, tmp_path, monkeypatch):
+    commands = _podman(monkeypatch)
+    monkeypatch.setattr("ccd.backends.gvisor.GVisorPodmanBackend.check_available", lambda self: None)
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "gvisor-podman", "--", "make", "test")
+
+    run = next(cmd for cmd in commands if cmd[:2] == ["podman", "run"])
+    assert run[run.index("--runtime") + 1] == "runsc" and run[-3:] == ["localhost/ccd", "make", "test"]
+
+
+def test_gvisor_backends_are_not_ready_without_the_runsc_runtime(monkeypatch):
+    import subprocess
+
+    import pytest
+
+    from ccd.backends import gvisor
+    from ccd.plugin import BackendError
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.check_available", lambda self: None)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout='{"runc":{}}', stderr=""))
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr("os.sysconf", lambda name: 4096)  # whatever the machine running the tests has
+
+    with pytest.raises(BackendError, match="no 'runsc' runtime"):
+        gvisor.GVisorDockerBackend().check_available()
+    with pytest.raises(BackendError, match="runsc not found"):
+        gvisor.GVisorPodmanBackend().check_available()
+
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout='{"runc":{},"runsc":{}}', stderr=""))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/runsc")
+    gvisor.GVisorDockerBackend().check_available()
+    gvisor.GVisorPodmanBackend().check_available()
+
+
+def test_gvisor_backends_are_not_ready_on_a_host_with_16k_pages(monkeypatch):
+    import subprocess
+
+    import pytest
+
+    from ccd.backends import gvisor
+    from ccd.plugin import BackendError
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.check_available", lambda self: None)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout='{"runsc":{}}', stderr=""))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/runsc")
+    monkeypatch.setattr("os.sysconf", lambda name: 16384)  # Raspberry Pi 5's default kernel
+
+    for backend in (gvisor.GVisorDockerBackend, gvisor.GVisorPodmanBackend):
+        with pytest.raises(BackendError, match="4096-byte pages, this one has 16384"):
+            backend().check_available()

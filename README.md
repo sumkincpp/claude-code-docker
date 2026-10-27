@@ -87,6 +87,8 @@ backend. `ccd attach` uses the run backend.
 |---|---|---|---|
 | `docker` | yes | yes (container) | Docker |
 | `podman` | yes | yes (container) | podman, rootless setup (`/etc/subuid`) |
+| `gvisor-docker` | no (uses docker's image) | yes (container in gVisor) | Docker with the `runsc` runtime (`misc/install-gvisor.sh`) |
+| `gvisor-podman` | no (uses podman's image) | yes (container in gVisor) | podman, `runsc` in PATH (`misc/install-gvisor.sh`) |
 | `buildah` | yes | no | buildah, overlay storage driver ([guide](docs/buildah.md)) |
 | `firecracker` | no (uses another backend's image) | yes (microVM) | `/dev/kvm`, `firecracker`, an NFS server (`exportfs`), `nft`, `sudo` |
 

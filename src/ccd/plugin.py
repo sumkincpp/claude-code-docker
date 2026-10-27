@@ -243,6 +243,8 @@ BUILTIN_BACKENDS = {
     "buildah": "ccd.backends.buildah:BuildahBackend",
     "podman": "ccd.backends.podman:PodmanBackend",
     "firecracker": "ccd.backends.firecracker:FirecrackerBackend",
+    "gvisor-docker": "ccd.backends.gvisor:GVisorDockerBackend",
+    "gvisor-podman": "ccd.backends.gvisor:GVisorPodmanBackend",
 }
 
 

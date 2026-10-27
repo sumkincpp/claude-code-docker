@@ -100,7 +100,7 @@ def ccd(tmp_path, monkeypatch):
     def unavailable(self):
         raise plugin.BackendError("disabled in tests")
 
-    for real in ("docker.DockerBackend", "buildah.BuildahBackend", "firecracker.FirecrackerBackend", "podman.PodmanBackend"):
+    for real in ("docker.DockerBackend", "buildah.BuildahBackend", "firecracker.FirecrackerBackend", "podman.PodmanBackend", "gvisor.GVisorDockerBackend", "gvisor.GVisorPodmanBackend"):
         monkeypatch.setattr(f"ccd.backends.{real}.check_available", unavailable)
     # Keep the developer's real ~/.config/ccd/ccd.toml out of the tests
     original = RunConfig.load_effective.__func__
