@@ -467,6 +467,8 @@ def test_images_shows_id_size_and_age_the_same_way_for_every_backend(ccd, tmp_pa
     buildah_inspect = {"OCIv1": {"created": old.isoformat()}}
 
     def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["docker", "image", "ls"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="ccd:latest\n", stderr="")
         out = {"docker": json.dumps(docker_inspect), "buildah": json.dumps(buildah_inspect if cmd[1] == "inspect" else buildah_list)}.get(cmd[0], "")
         return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
 
@@ -1145,6 +1147,25 @@ def test_images_lists_every_tag_of_the_docker_image(ccd, monkeypatch, capsys):
     listing = next(cmd for cmd in commands if cmd[1:3] == ["image", "ls"])
     assert listing.count("--filter") == 2 and "reference=ccd" in listing and "reference=ccd-vm" in listing
     assert ["docker", "image", "inspect", "ccd:latest", "ccd:next"] in commands  # sorted, without the untagged entry
+
+
+def test_images_lists_each_tag_of_one_image_separately(ccd, monkeypatch, capsys):
+    import json
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    shared = {"Id": "sha256:" + "7" * 64, "RepoTags": ["ccd:latest", "ccd:next", "other:tag"], "Size": 3_600_000_000, "Created": "2026-10-27T08:00:00Z"}
+
+    def fake_run(cmd, **kwargs):
+        out = "ccd:latest\nccd:next\n" if cmd[1:3] == ["image", "ls"] else json.dumps([shared])
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ccd("images", "--backend", "docker")
+
+    rows = [line.split() for line in capsys.readouterr().out.splitlines()[1:]]
+    assert [(row[2], row[3]) for row in rows] == [("ccd:latest", "777777777777"), ("ccd:next", "777777777777")]  # not other:tag
 
 
 def test_images_with_nothing_built_lists_nothing(ccd, monkeypatch, capsys):

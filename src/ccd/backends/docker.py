@@ -138,9 +138,12 @@ class DockerBackend(Backend):
             entries = json.loads(out)
         except ValueError:
             return []
+        # One row per tag: tags of the same image share an id and arrive together in one entry
+        wanted = set(names)
         return [
-            ImageInfo(self.name, "image", (entry.get("RepoTags") or ["?"])[0], entry.get("Id", ""), entry.get("Size"), parse_time(entry.get("Created", "")))
+            ImageInfo(self.name, "image", tag, entry.get("Id", ""), entry.get("Size"), parse_time(entry.get("Created", "")))
             for entry in entries
+            for tag in sorted(t for t in entry.get("RepoTags") or [] if t in wanted)
         ]
 
     def tag_image(self, name: str, source: str, target: str, options: dict) -> None:
