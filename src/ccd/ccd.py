@@ -17,6 +17,7 @@ from ccd.config import (
     RunConfig,
     RunParameters,
     image_ref,
+    validate_tag,
 )
 from ccd.features import Feature, FeatureError, known_versions, load_features, select
 from ccd.features.render import render_dockerfile, stage_context
@@ -304,6 +305,21 @@ def print_table(rows: list[tuple[str, ...]]) -> None:
         print("  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip())
 
 
+def tag_image(run_config: RunConfig, source: str, target: str, build_override: str | None = None) -> None:
+    """Add the tag `target` to the image tagged `source` on the build backend (promote a build, or keep a backup)."""
+    for tag in (source, target):
+        try:
+            validate_tag(tag)
+        except ValueError as e:
+            raise BackendError(str(e)) from e
+    build_name, _ = resolve_backends(run_config, BuildConfig.load(Path(CONFIG_FILE_NAME)), build_override)
+    backend, options = load_backend(build_name, run_config)
+    require_tag_support(backend, source)
+    require_tag_support(backend, target)
+    backend.tag_image(IMAGE_NAME, source, target, options)
+    print(f"Tagged {image_ref(IMAGE_NAME, source)} as {image_ref(IMAGE_NAME, target)} in {build_name}")
+
+
 def show_features(features: dict[str, Feature]) -> None:
     rows = [("FEATURE", "DEFAULT", "REQUIRES", "VERSIONS", "SOURCE")]
     for feature in features.values():
@@ -519,6 +535,10 @@ def main() -> None:
 
     command_parser.add_parser("backends", help="List installed backend plugins and whether they are ready")
     command_parser.add_parser("features", help="List the features the image can be built from")
+    tag_parser = command_parser.add_parser("tag", help="Give an image tag another tag, for example ccd tag next latest to promote a build")
+    tag_parser.add_argument("source", help="Existing tag")
+    tag_parser.add_argument("target", help="Tag to create or replace")
+    tag_parser.add_argument("--backend", default=None, help="Build backend holding the image (default: as configured, like ccd build --backend)")
     images_parser = command_parser.add_parser("images", help="List the build data (images, rootfs, kernel) of all ready backends")
     images_parser.add_argument("--backend", default=None, help="Only list this backend")
     status_parser = command_parser.add_parser("status", help="Show the configured backends, the built image and whether the run backend's copy is current")
@@ -548,6 +568,8 @@ def main() -> None:
             show_backends(run_config)
         elif args.command == "features":
             show_features(features)
+        elif args.command == "tag":
+            tag_image(run_config, args.source, args.target, args.backend)
         elif args.command == "images":
             show_images(run_config, args.backend)
         elif args.command == "status":

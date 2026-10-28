@@ -194,6 +194,10 @@ class Backend(ABC):
         """Builder side: id of the image the last build produced, or "" when there is none."""
         return ""
 
+    def tag_image(self, name: str, source: str, target: str, options: dict[str, Any]) -> None:
+        """Builder side: give the image tagged `source` the additional tag `target`, replacing it if it exists."""
+        raise BackendError(f"Backend '{self.name}' cannot tag images")
+
     def describe_image(self, built_id: str, options: dict[str, Any]) -> str:
         """Runner side: how its prepared image relates to the builder's current image `built_id` (for `ccd status`)."""
         return ""

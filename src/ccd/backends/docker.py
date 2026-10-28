@@ -122,8 +122,18 @@ class DockerBackend(Backend):
         return result.stdout.strip()
 
     def images(self, options: dict) -> list[ImageInfo]:
+        # Every tag of the image and of its VM layer; names come from the listing, then one inspect gives the details
+        listing = subprocess.run(
+            [self.cli, "image", "ls", "--filter", f"reference={self.image_ref('ccd')}", "--filter", f"reference={self.image_ref('ccd-vm')}", "--format", "{{.Repository}}:{{.Tag}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        names = sorted({line.strip() for line in listing.splitlines() if line.strip() and "<none>" not in line})
+        if not names:
+            return []
         # Unknown images make the exit code non-zero, but the ones that exist are still printed
-        out = subprocess.run([self.cli, "image", "inspect", self.image_ref("ccd"), self.image_ref("ccd-vm")], capture_output=True, text=True, check=False).stdout
+        out = subprocess.run([self.cli, "image", "inspect", *names], capture_output=True, text=True, check=False).stdout
         try:
             entries = json.loads(out)
         except ValueError:
@@ -132,6 +142,12 @@ class DockerBackend(Backend):
             ImageInfo(self.name, "image", (entry.get("RepoTags") or ["?"])[0], entry.get("Id", ""), entry.get("Size"), parse_time(entry.get("Created", "")))
             for entry in entries
         ]
+
+    def tag_image(self, name: str, source: str, target: str, options: dict) -> None:
+        try:
+            subprocess.run([self.cli, "tag", self.image_ref(name, source), self.image_ref(name, target)], capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            raise BackendError(f"Tagging failed: {(e.stderr or '').strip() or f'exit code {e.returncode}'}") from e
 
     def list_running(self) -> list[str]:
         cmd = [self.cli, "ps", "--format", "{{.Names}}"]

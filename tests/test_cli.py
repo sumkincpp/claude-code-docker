@@ -583,6 +583,8 @@ def test_images_lists_an_image_once_when_buildah_and_podman_share_it(ccd, monkey
     inspect = [{"Id": "15388f94c27c" + "0" * 52, "RepoTags": ["localhost/ccd:latest"], "Size": 3_700_000_000, "Created": "2026-10-25T19:50:12Z"}]
 
     def fake_run(cmd, **kwargs):
+        if cmd[1:3] == ["image", "ls"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="localhost/ccd:latest\n", stderr="")
         out = json.dumps(listing if cmd[:3] == ["buildah", "images", "--json"] else inspect)
         return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
 
@@ -1086,3 +1088,80 @@ def test_status_shows_the_requested_tag(ccd, capsys):
     ccd("status", "--tag", "next", toml='[run]\nbackend = "fake"\n')
 
     assert "Image 'ccd:next' in fake: id-1" in capsys.readouterr().out
+
+
+def test_images_lists_every_tag_of_the_docker_image(ccd, monkeypatch, capsys):
+    import json
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    entries = [
+        {"Id": "sha256:" + "a" * 64, "RepoTags": ["ccd:latest"], "Size": 3_000_000_000, "Created": "2026-10-25T19:50:12Z"},
+        {"Id": "sha256:" + "b" * 64, "RepoTags": ["ccd:next"], "Size": 3_100_000_000, "Created": "2026-10-27T08:00:00Z"},
+    ]
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd[1:3] == ["image", "ls"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="ccd:next\nccd:latest\n<none>:<none>\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(entries), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ccd("images", "--backend", "docker")
+
+    rows = [line.split() for line in capsys.readouterr().out.splitlines()[1:]]
+    assert [(row[0], row[2], row[3]) for row in rows] == [("docker", "ccd:latest", "aaaaaaaaaaaa"), ("docker", "ccd:next", "bbbbbbbbbbbb")]
+    listing = next(cmd for cmd in commands if cmd[1:3] == ["image", "ls"])
+    assert listing.count("--filter") == 2 and "reference=ccd" in listing and "reference=ccd-vm" in listing
+    assert ["docker", "image", "inspect", "ccd:latest", "ccd:next"] in commands  # sorted, without the untagged entry
+
+
+def test_images_with_nothing_built_lists_nothing(ccd, monkeypatch, capsys):
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+
+    ccd("images", "--backend", "docker")
+
+    assert "No build data yet" in capsys.readouterr().out
+
+
+def test_tag_command_tags_on_docker_podman_and_buildah(ccd, monkeypatch, capsys):
+    commands = _docker_commands(monkeypatch)
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.check_available", lambda self: None)
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+
+    ccd("tag", "next", "latest", toml='[run]\nbackend = "docker"\n')
+    ccd("tag", "latest", "previous", toml='[run]\nbackend = "podman"\n')
+    ccd("tag", "next", "latest", toml='[build]\nbackend = "buildah"\n[run]\nbackend = "fake"\n')
+
+    assert ["docker", "tag", "ccd:next", "ccd"] in commands
+    assert ["podman", "tag", "localhost/ccd", "localhost/ccd:previous"] in commands
+    assert ["buildah", "tag", "localhost/ccd:next", "localhost/ccd"] in commands
+    assert "Tagged ccd:next as ccd in docker" in capsys.readouterr().out
+
+
+def test_tag_command_reports_a_failing_tool(ccd, monkeypatch, capsys):
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+
+    def fail(cmd, **kwargs):
+        raise subprocess.CalledProcessError(1, cmd, stderr="Error response from daemon: No such image: ccd:ghost\n")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+
+    code, _ = ccd("tag", "ghost", "latest", toml='[run]\nbackend = "docker"\n')
+
+    assert code == 1 and "No such image: ccd:ghost" in capsys.readouterr().err
+
+
+def test_tag_command_rejects_bad_tags_and_backends_that_cannot_tag(ccd, capsys):
+    code, _ = ccd("tag", "next", "has space", toml='[run]\nbackend = "fake"\n')
+    assert code == 1 and "Invalid image tag" in capsys.readouterr().err
+
+    code, _ = ccd("tag", "next", "latest", toml='[run]\nbackend = "fake"\n')  # the test backend has no tagging
+    assert code == 1 and "cannot tag images" in capsys.readouterr().err

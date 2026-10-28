@@ -40,6 +40,12 @@ class BuildahBackend(Backend):
     def provide_image(self, fmt: str, request: BuildRequest):
         return super().provide_image(fmt, replace(request, image_name=f"localhost/{request.image_name}"))
 
+    def tag_image(self, name: str, source: str, target: str, options: dict) -> None:
+        try:
+            subprocess.run(["buildah", "tag", f"localhost/{image_ref(name, source)}", f"localhost/{image_ref(name, target)}"], capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            raise BackendError(f"Tagging failed: {(e.stderr or '').strip() or f'exit code {e.returncode}'}") from e
+
     def built_image_id(self, request: BuildRequest) -> str:
         result = subprocess.run(["buildah", "images", "--noheading", "--format", "{{.ID}}", f"localhost/{image_ref(request.image_name, request.tag)}"], capture_output=True, text=True, check=False)
         return result.stdout.strip()
