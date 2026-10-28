@@ -1,0 +1,16 @@
+description = "Go toolchain, installed from go.dev"
+order = 85
+
+[env]
+PATH = "/home/user/.local/go/bin:/home/user/go/bin:${PATH}"
+
+[install]
+command = [
+    'if [ "$GO_VERSION" = latest ]; then GO_VERSION=$(curl -fsSL "https://go.dev/VERSION?m=text" | head -n1); else GO_VERSION="go${GO_VERSION#go}"; fi',
+    'case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) echo "unsupported arch" >&2; exit 1 ;; esac',
+    'mkdir -p "$HOME/.local"',
+    'curl -fsSL "https://go.dev/dl/${GO_VERSION}.linux-${arch}.tar.gz" | tar -C "$HOME/.local" -xz',
+]
+
+[verify]
+command = "go version"

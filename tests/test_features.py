@@ -29,7 +29,7 @@ def test_bundled_features_load_and_resolve_in_a_working_order():
 
     assert names.index("nvm") < names.index("node") < names.index("pnpm") < names.index("claude")
     assert "jules" not in names  # not a default
-    assert {"claude", "codex", "gemini", "copilot", "opencode", "pi", "rust", "uv", "local-claude"} <= set(names)
+    assert {"claude", "codex", "gemini", "copilot", "opencode", "pi", "rust", "go", "uv", "local-claude"} <= set(names)
 
 
 def test_bundled_flags_and_variables_follow_the_convention():

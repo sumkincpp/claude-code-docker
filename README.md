@@ -59,6 +59,7 @@ At runtime each binary in `~/.local/bin/` is a small wrapper script pointing int
 ### Runtimes
 
 - `rust` - Rust toolchain via rustup
+- `go` - Go toolchain from go.dev
 
 ## Requirements
 
