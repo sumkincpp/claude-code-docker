@@ -982,3 +982,12 @@ def test_a_broken_feature_manifest_stops_ccd_with_its_file_name(ccd, tmp_path, c
     code, _ = ccd("features")
 
     assert code == 1 and "unknown key(s): colour" in capsys.readouterr().err
+
+
+def test_audit_ignore_components_reach_the_install_step(ccd):
+    _, built = _build_command(ccd, "--npm-audit-ignore-components", "pi,gemini")
+
+    args = built["command"]
+    assert "NPM_AUDIT_IGNORE_COMPONENTS=gemini,pi" in {args[i + 1] for i, a in enumerate(args) if a == "--build-arg"}
+    assert "ARG NPM_AUDIT_IGNORE_COMPONENTS=" in built["dockerfile"]
+    assert 'export NPM_AUDIT_IGNORE_COMPONENTS="${NPM_AUDIT_IGNORE_COMPONENTS}"' in built["dockerfile"]

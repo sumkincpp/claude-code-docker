@@ -14,6 +14,7 @@ const RELEASE_AGE_MINUTES = RELEASE_AGE_DAYS * 24 * 60;
 const PNPM_VERSION = execSync("pnpm --version", { encoding: "utf8" }).trim();
 const PNPM_MAJOR = parseInt(PNPM_VERSION.split(".")[0], 10);
 const AUDIT_IGNORE_CVES = (process.env.PNPM_AUDIT_IGNORE_CVES ?? "").split(",").map(s => s.trim()).filter(Boolean);
+const AUDIT_IGNORE_COMPONENTS = (process.env.NPM_AUDIT_IGNORE_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
 const AUDIT_FORCE_FIX_COMPONENTS = (process.env.NPM_AUDIT_FORCE_FIX_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
 const MIN_RELEASE_AGE_IGNORE_COMPONENTS = (process.env.NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
 const BIN_DIR = path.join(os.homedir(), ".local/bin");
@@ -278,8 +279,14 @@ async function installCli({ component, package: packageName, version: versionSpe
     run("pnpm install", installDir);
   }
 
-  run("pnpm audit", installDir);
-  const auditResult = "passed";
+  let auditResult = "passed";
+  try {
+    run("pnpm audit", installDir);
+  } catch (error) {
+    if (!AUDIT_IGNORE_COMPONENTS.includes(component)) throw error;
+    console.log(`[${component}] pnpm audit failed, ignored because ${component} is in NPM_AUDIT_IGNORE_COMPONENTS`);
+    auditResult = "failed (ignored)";
+  }
 
   appendSummary(
     `  final installed: ${resolvedVersion}${resolvedPublishTime ? ` (published ${resolvedPublishTime})` : ""}\n` +
