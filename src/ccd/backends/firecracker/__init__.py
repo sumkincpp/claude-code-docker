@@ -75,6 +75,7 @@ def assets_hash() -> str:
 class FirecrackerBackend(Backend):
     name = "firecracker"
     can_build = False  # images come from another backend (see accepted_formats)
+    supports_tags = False  # one rootfs in the cache dir
 
     def check_available(self) -> None:
         if shutil.which("firecracker") is None:

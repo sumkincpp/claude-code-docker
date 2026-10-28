@@ -1,5 +1,6 @@
 import argparse
 import logging
+import re
 import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -20,6 +21,8 @@ CONTAINER_NAME_BASE = "ccd"
 CONFIG_FILE_NAME = "ccd.toml"
 GLOBAL_CONFIG_PATH = Path.home() / ".config" / "ccd" / "ccd.toml"
 DEFAULT_BACKEND = "docker"
+DEFAULT_TAG = "latest"
+TAG_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 # Exported images handed from a build backend to a different run backend
 
 
@@ -27,6 +30,18 @@ if TYPE_CHECKING:
     from ccd.features import Feature
 
 logger = logging.getLogger(__name__)
+
+
+def validate_tag(tag: str) -> str:
+    """The tag itself, or ValueError when container tools would not accept it."""
+    if not TAG_PATTERN.match(tag):
+        raise ValueError(f"Invalid image tag {tag!r} (letters, digits, '_', '.' and '-', at most 128 characters, not starting with '.' or '-')")
+    return tag
+
+
+def image_ref(name: str, tag: str = DEFAULT_TAG) -> str:
+    """name for the default tag (which container tools resolve to :latest anyway), name:tag otherwise."""
+    return name if tag == DEFAULT_TAG else f"{name}:{tag}"
 
 
 def _parse_comma_set(value: str) -> set[str]:
@@ -41,6 +56,7 @@ def _load_toml(path: Path) -> dict:
 @dataclass
 class BuildConfig:
     backend: str | None = None
+    tag: str | None = None
     with_features: set[str] | None = None
     without_features: set[str] | None = None
     force: bool = False
@@ -73,6 +89,7 @@ class BuildConfig:
 
         return cls(
             backend=build.get("backend"),
+            tag=build.get("tag"),
             with_features=as_set(build["with_features"]) if "with_features" in build else None,
             without_features=as_set(build["without_features"]) if "without_features" in build else None,
             npm_min_release_age_days=build.get("npm_min_release_age_days", 7),
@@ -86,6 +103,8 @@ class BuildConfig:
         """Return a new config with explicitly provided CLI args applied on top."""
         config = replace(self)
 
+        if getattr(args, "tag", None) is not None:
+            config.tag = args.tag
         if args.with_features is not None:
             config.with_features = _parse_comma_set(args.with_features)
         if args.without_features is not None:
@@ -112,6 +131,12 @@ class BuildConfig:
         if self.with_features is not None and self.without_features is not None:
             logger.error("Use only one of --with or --without")
             sys.exit(1)
+        if self.tag is not None:
+            try:
+                validate_tag(str(self.tag))
+            except ValueError as e:
+                logger.error("%s", e)
+                sys.exit(1)
 
 
 @dataclass
@@ -155,6 +180,7 @@ class MountConfig:
 @dataclass
 class RunConfig:
     backend: str | None = None
+    tag: str | None = None
     memory: str | None = None
     cpus: str | None = None
     mounts: List[MountConfig] = field(default_factory=list)
@@ -193,6 +219,7 @@ class RunConfig:
 
         return cls(
             backend=run.get("backend"),
+            tag=run.get("tag"),
             memory=run.get("memory"),
             cpus=run.get("cpus"),
             mounts=mounts,
@@ -204,7 +231,7 @@ class RunConfig:
     def merge(self, local: "RunConfig") -> "RunConfig":
         """Return a new config with local values taking precedence over self (global).
 
-        Scalar fields (backend, memory, cpus): local wins if set, otherwise fall back to global.
+        Scalar fields (backend, tag, memory, cpus): local wins if set, otherwise fall back to global.
         Mounts: global mounts first, then local mounts (both are applied).
         Feature mounts: merged per feature, the local list replaces the global one; features follows the scalar rule.
         Backend option tables: merged per backend, local keys win.
@@ -215,6 +242,7 @@ class RunConfig:
 
         return RunConfig(
             backend=local.backend if local.backend is not None else self.backend,
+            tag=local.tag if local.tag is not None else self.tag,
             memory=local.memory if local.memory is not None else self.memory,
             cpus=local.cpus if local.cpus is not None else self.cpus,
             mounts=self.mounts + local.mounts,
@@ -264,6 +292,7 @@ class RunParameters:
     image_name: str
     app_folder: str
     home_folder: str
+    tag: str = DEFAULT_TAG
     memory: str = "1g"
     cpus: str = "2"
     root: bool = False
@@ -303,10 +332,18 @@ class RunParameters:
             if run_config.cpus is not None and args.cpus == "2":
                 cpus = run_config.cpus
 
+        tag = getattr(args, "tag", None) or (run_config.tag if run_config is not None else None) or DEFAULT_TAG
+        try:
+            validate_tag(str(tag))
+        except ValueError as e:
+            logger.error("%s", e)
+            sys.exit(1)
+
         return cls(
             image_name=image_name,
             app_folder=app_folder,
             home_folder=args.home,
+            tag=str(tag),
             memory=memory,
             cpus=cpus,
             root=args.root,

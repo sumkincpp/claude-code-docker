@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 from ccd.backends.common import build_inputs, to_docker_build_args
+from ccd.config import DEFAULT_TAG, image_ref
 from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, ImageInfo, RunRequest, parse_time
 
 logger = logging.getLogger(__name__)
@@ -27,8 +28,8 @@ class DockerBackend(Backend):
     image_prefix = ""  # podman needs "localhost/" to address images that are not from a registry
     runtime_args: list[str] = []  # extra `run` flags selecting the OCI runtime, e.g. gVisor's --runtime runsc
 
-    def image_ref(self, image_name: str) -> str:
-        return f"{self.image_prefix}{image_name}"
+    def image_ref(self, image_name: str, tag: str = DEFAULT_TAG) -> str:
+        return f"{self.image_prefix}{image_ref(image_name, tag)}"
 
     def user_args(self, root: bool, options: dict) -> list[str]:
         """Flags choosing the user for `run` and `exec`: the image's own user, or root when asked for."""
@@ -44,7 +45,7 @@ class DockerBackend(Backend):
 
         dockerfile, context = build_inputs(request)
         docker_args = shlex.join(to_docker_build_args(request.config, request.extra_args))
-        build_command = f"{self.cli} build {docker_args} -f {shlex.quote(str(dockerfile))} -t {shlex.quote(self.image_ref(request.image_name))} {shlex.quote(str(context))}"
+        build_command = f"{self.cli} build {docker_args} -f {shlex.quote(str(dockerfile))} -t {shlex.quote(self.image_ref(request.image_name, request.tag))} {shlex.quote(str(context))}"
         logger.debug("Build command: %s", build_command)
 
         try:
@@ -89,7 +90,7 @@ class DockerBackend(Backend):
         ]
 
         cmd.extend(self.user_args(request.root, request.options))
-        cmd.extend([*volume_args(request), self.image_ref(request.image_name), *request.command])
+        cmd.extend([*volume_args(request), self.image_ref(request.image_name, request.tag), *request.command])
 
         logger.info("  Full command: %s", " ".join(cmd))
 
@@ -117,7 +118,7 @@ class DockerBackend(Backend):
         return ["docker-daemon"]
 
     def built_image_id(self, request: BuildRequest) -> str:
-        result = subprocess.run([self.cli, "image", "inspect", "--format", "{{.Id}}", self.image_ref(request.image_name)], capture_output=True, text=True, check=False)
+        result = subprocess.run([self.cli, "image", "inspect", "--format", "{{.Id}}", self.image_ref(request.image_name, request.tag)], capture_output=True, text=True, check=False)
         return result.stdout.strip()
 
     def images(self, options: dict) -> list[ImageInfo]:

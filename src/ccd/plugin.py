@@ -19,7 +19,7 @@ from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
 
-from ccd.config import BuildConfig
+from ccd.config import DEFAULT_TAG, BuildConfig, image_ref
 
 ENTRY_POINT_GROUP = "ccd.backends"
 
@@ -55,6 +55,7 @@ class BuildRequest:
     options: dict[str, Any] = field(default_factory=dict)
     dockerfile: Path | None = None  # generated from the selected features, set when there is something to build
     context: Path | None = None
+    tag: str = DEFAULT_TAG
 
 
 @dataclass
@@ -67,6 +68,7 @@ class RunRequest:
     mounts: list[ResolvedMount]
     options: dict[str, Any] = field(default_factory=dict)
     command: list[str] = field(default_factory=list)  # one-off command to run instead of an interactive shell
+    tag: str = DEFAULT_TAG
 
 
 @dataclass
@@ -158,6 +160,7 @@ class Backend(ABC):
     name: str
     can_build = True
     can_run = True
+    supports_tags = True  # False for backends that keep a single image
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         """Hook for contributing backend-specific CLI flags to build/run/attach."""
@@ -202,7 +205,7 @@ class Backend(ABC):
     def provide_image(self, fmt: str, request: BuildRequest) -> AbstractContextManager[str | Path]:
         """Builder side: make the built image available in `fmt` and yield where it is (an image name or a path).
         Whatever was set up is released when the block exits. In-place formats need no work: the image is addressed by name."""
-        return nullcontext(request.image_name)
+        return nullcontext(image_ref(request.image_name, request.tag))
 
     def accepted_formats(self) -> list[str]:
         """Runner side: formats this backend can import, best first."""

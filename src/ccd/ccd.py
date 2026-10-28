@@ -10,11 +10,13 @@ from ccd.config import (
     CONFIG_FILE_NAME,
     CONTAINER_NAME_BASE,
     DEFAULT_BACKEND,
+    DEFAULT_TAG,
     IMAGE_NAME,
     BuildConfig,
     PathSpec,
     RunConfig,
     RunParameters,
+    image_ref,
 )
 from ccd.features import Feature, FeatureError, known_versions, load_features, select
 from ccd.features.render import render_dockerfile, stage_context
@@ -179,7 +181,8 @@ def prompt_container_name(backend: Backend):
 
 def run_container(backend: Backend, params: RunParameters, backend_options: dict | None = None) -> int:
     """Resolve mounts and hand the run off to the backend; returns the exit code of the shell or command"""
-    logger.info("Preparing to run container: %s", params.image_name)
+    logger.info("Preparing to run container: %s", image_ref(params.image_name, params.tag))
+    require_tag_support(backend, params.tag)
 
     # Convert to absolute paths
     app_path = Path(params.app_folder).resolve()
@@ -218,6 +221,7 @@ def run_container(backend: Backend, params: RunParameters, backend_options: dict
         backend.run(
             RunRequest(
                 image_name=params.image_name,
+                tag=params.tag,
                 name=container_name,
                 memory=params.memory,
                 cpus=params.cpus,
@@ -254,6 +258,7 @@ def add_container_args(parser: argparse.ArgumentParser, home_folder: Path) -> ar
     parser.add_argument("--memory", default="1g", help="Memory limit for the container (default: 1g)")
     parser.add_argument("--cpus", default="2", help="Number of CPUs for the container (default: 2)")
     parser.add_argument("--root", action="store_true", help="Run as root (same as --user root)")
+    parser.add_argument("--tag", default=None, help=f"Image tag to run (default: [run] tag from {CONFIG_FILE_NAME}, else {DEFAULT_TAG})")
     add_user_arg(parser)
     add_backend_arg(parser)
     return parser
@@ -271,6 +276,11 @@ def load_backend(name: str, run_config: RunConfig) -> tuple[Backend, dict]:
 def run_backend_name(args: argparse.Namespace, run_config: RunConfig) -> str:
     """CLI --backend beats [run].backend beats the default."""
     return getattr(args, "backend", None) or run_config.backend or DEFAULT_BACKEND
+
+
+def require_tag_support(backend: Backend, tag: str) -> None:
+    if tag != DEFAULT_TAG and not backend.supports_tags:
+        raise BackendError(f"Backend '{backend.name}' keeps a single image, so image tag '{tag}' is not supported (only '{DEFAULT_TAG}')")
 
 
 def resolve_backends(run_config: RunConfig, build_config: BuildConfig, build_override: str | None = None) -> tuple[str, str]:
@@ -333,8 +343,9 @@ def show_images(run_config: RunConfig, only: str | None = None) -> None:
         print_table(rows)
 
 
-def show_status(run_config: RunConfig, build_override: str | None = None) -> None:
+def show_status(run_config: RunConfig, build_override: str | None = None, tag: str | None = None) -> None:
     build_config = BuildConfig.load(Path(CONFIG_FILE_NAME))
+    tag = tag or build_config.tag or DEFAULT_TAG
     build_name, run_name = resolve_backends(run_config, build_config, build_override)
     builder, builder_options, build_why = try_backend(build_name, run_config)
     runner, runner_options, run_why = try_backend(run_name, run_config)
@@ -343,8 +354,8 @@ def show_status(run_config: RunConfig, build_override: str | None = None) -> Non
     print(f"Run backend:   {run_name} ({'ready' if runner else 'not ready: ' + run_why})")
     built_id = ""
     if builder is not None:
-        built_id = builder.built_image_id(BuildRequest(image_name=IMAGE_NAME, config=build_config, options=builder_options))
-        print(f"Image '{IMAGE_NAME}' in {build_name}: {built_id or 'not built (run ccd build)'}")
+        built_id = builder.built_image_id(BuildRequest(image_name=IMAGE_NAME, config=build_config, options=builder_options, tag=tag))
+        print(f"Image '{image_ref(IMAGE_NAME, tag)}' in {build_name}: {built_id or 'not built (run ccd build)'}")
     if runner is not None and build_name != run_name:
         verdict = runner.describe_image(built_id, runner_options)
         if verdict:
@@ -375,23 +386,31 @@ def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: lis
 
     build_name, run_name = resolve_backends(run_config, config, args.backend)
 
+    tag = config.tag or DEFAULT_TAG
     builder, builder_options = load_backend(build_name, run_config)
+    require_tag_support(builder, tag)
+    runner = None
+    if build_name != run_name and tag != DEFAULT_TAG:
+        runner, runner_options = load_backend(run_name, run_config)  # fail before building, not after
+        require_tag_support(runner, tag)
+
     with timed(f"Build ({build_name})", logger), tempfile.TemporaryDirectory(prefix="ccd-build-") as context:
         dockerfile = stage_context(selected, Path(context))
-        request = BuildRequest(image_name=IMAGE_NAME, config=config, extra_args=extra_args, options=builder_options, dockerfile=dockerfile, context=Path(context))
+        request = BuildRequest(image_name=IMAGE_NAME, config=config, extra_args=extra_args, options=builder_options, dockerfile=dockerfile, context=Path(context), tag=tag)
         builder.build(request)
 
     if build_name == run_name:
         return
 
-    runner, runner_options = load_backend(run_name, run_config)
+    if runner is None:
+        runner, runner_options = load_backend(run_name, run_config)
     logger.info("Handing image from '%s' to '%s'", build_name, run_name)
     with timed(f"Import ({run_name})", logger):
         fmt = hand_over(
             builder,
             runner,
-            BuildRequest(image_name=IMAGE_NAME, config=config, options=builder_options),
-            BuildRequest(image_name=IMAGE_NAME, config=config, options=runner_options),
+            BuildRequest(image_name=IMAGE_NAME, config=config, options=builder_options, tag=tag),
+            BuildRequest(image_name=IMAGE_NAME, config=config, options=runner_options, tag=tag),
         )
     logger.info("Handed over as '%s'", fmt)
 
@@ -425,6 +444,11 @@ def main() -> None:
         "--backend",
         default=None,
         help=f"Backend that builds the image (default: [build].backend from {CONFIG_FILE_NAME}, else the run backend)",
+    )
+    build_parser.add_argument(
+        "--tag",
+        default=None,
+        help=f"Tag the image with this instead of {DEFAULT_TAG}; {DEFAULT_TAG} is left alone (default: [build] tag from {CONFIG_FILE_NAME})",
     )
     build_parser.add_argument(
         "--with",
@@ -499,6 +523,7 @@ def main() -> None:
     images_parser.add_argument("--backend", default=None, help="Only list this backend")
     status_parser = command_parser.add_parser("status", help="Show the configured backends, the built image and whether the run backend's copy is current")
     status_parser.add_argument("--backend", default=None, help="Build backend to compare with (default: as configured, like ccd build --backend)")
+    status_parser.add_argument("--tag", default=None, help=f"Image tag to look at (default: [build] tag from {CONFIG_FILE_NAME}, else {DEFAULT_TAG})")
 
     prune_parser = command_parser.add_parser("prune", help="Remove leftovers of dead runs (VM state, taps, exports, firewall rules)")
     prune_parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True, help="Only list what would be removed (default); --no-dry-run removes it")
@@ -526,7 +551,7 @@ def main() -> None:
         elif args.command == "images":
             show_images(run_config, args.backend)
         elif args.command == "status":
-            show_status(run_config, args.backend)
+            show_status(run_config, args.backend, args.tag)
         elif args.command == "build":
             logger.debug("Executing build command")
             build_image(args, run_config, unknown, features)

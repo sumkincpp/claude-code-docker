@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from ccd.backends.common import build_inputs, to_docker_build_args
+from ccd.config import image_ref
 from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, ImageInfo, RunRequest, parse_size, parse_time
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ class BuildahBackend(Backend):
     def build(self, request: BuildRequest) -> None:
         # `localhost/` keeps later `buildah from` lookups from trying a registry
         dockerfile, context = build_inputs(request)
-        cmd = ["buildah", "bud", "--layers", "-t", f"localhost/{request.image_name}", "-f", str(dockerfile), *to_docker_build_args(request.config, request.extra_args), str(context)]
+        cmd = ["buildah", "bud", "--layers", "-t", f"localhost/{image_ref(request.image_name, request.tag)}", "-f", str(dockerfile), *to_docker_build_args(request.config, request.extra_args), str(context)]
         logger.debug("Build command: %s", cmd)
         try:
             subprocess.run(cmd, check=True)
@@ -40,7 +41,7 @@ class BuildahBackend(Backend):
         return super().provide_image(fmt, replace(request, image_name=f"localhost/{request.image_name}"))
 
     def built_image_id(self, request: BuildRequest) -> str:
-        result = subprocess.run(["buildah", "images", "--noheading", "--format", "{{.ID}}", f"localhost/{request.image_name}"], capture_output=True, text=True, check=False)
+        result = subprocess.run(["buildah", "images", "--noheading", "--format", "{{.ID}}", f"localhost/{image_ref(request.image_name, request.tag)}"], capture_output=True, text=True, check=False)
         return result.stdout.strip()
 
     def images(self, options: dict) -> list[ImageInfo]:

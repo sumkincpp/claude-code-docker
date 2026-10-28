@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 
 def test_run_mounts_app_and_agent_config_and_defaults_to_user(ccd, tmp_path):
     app, home = tmp_path / "myapp", tmp_path / "home"
@@ -991,3 +993,96 @@ def test_audit_ignore_components_reach_the_install_step(ccd):
     assert "NPM_AUDIT_IGNORE_COMPONENTS=gemini,pi" in {args[i + 1] for i, a in enumerate(args) if a == "--build-arg"}
     assert "ARG NPM_AUDIT_IGNORE_COMPONENTS=" in built["dockerfile"]
     assert 'export NPM_AUDIT_IGNORE_COMPONENTS="${NPM_AUDIT_IGNORE_COMPONENTS}"' in built["dockerfile"]
+
+
+def _docker_commands(monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    commands = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: commands.append(cmd) or subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    return commands
+
+
+def _image_of_run(commands, cli="docker"):
+    run = next(cmd for cmd in commands if cmd[:2] == [cli, "run"])
+    return run[-1]
+
+
+def test_the_default_tag_changes_no_image_reference(ccd, tmp_path, monkeypatch):
+    commands = _docker_commands(monkeypatch)
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "docker")
+    _, built = _build_command(ccd)
+
+    assert _image_of_run(commands) == "ccd"
+    assert built["command"][built["command"].index("-t") + 1] == "ccd"
+
+
+def test_build_tag_names_the_image_and_leaves_latest_alone(ccd):
+    _, built = _build_command(ccd, "--tag", "next")
+
+    assert built["command"][built["command"].index("-t") + 1] == "ccd:next"
+
+
+def test_run_tag_runs_that_tag_on_docker_and_podman(ccd, tmp_path, monkeypatch):
+    commands = _docker_commands(monkeypatch)
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.check_available", lambda self: None)
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "docker", "--tag", "next")
+    ccd(".", "--home", str(tmp_path / "h"), "--backend", "podman", "--tag", "v2")
+
+    assert _image_of_run(commands) == "ccd:next"
+    assert _image_of_run(commands, "podman") == "localhost/ccd:v2"
+
+
+def test_tag_can_come_from_the_config_and_the_flag_wins(ccd, tmp_path, monkeypatch):
+    commands = _docker_commands(monkeypatch)
+    (tmp_path / "app").mkdir()
+    toml = '[build]\ntag = "stable"\n[run]\ntag = "stable"\nbackend = "docker"\n'
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), toml=toml)
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--tag", "next", toml=toml)
+    _, built = _build_command(ccd, toml='[build]\ntag = "stable"\n')
+
+    runs = [cmd[-1] for cmd in commands if cmd[:2] == ["docker", "run"]]
+    assert runs == ["ccd:stable", "ccd:next"]
+    assert built["command"][built["command"].index("-t") + 1] == "ccd:stable"
+
+
+@pytest.mark.parametrize("tag", ["-bad", ".bad", "has space", "a/b", "x" * 129])
+def test_invalid_tags_are_rejected(ccd, tmp_path, capsys, tag):
+    (tmp_path / "app").mkdir()
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", f"--tag={tag}")
+
+    assert code == 1 and not calls and "Invalid image tag" in capsys.readouterr().err
+    code, calls = ccd("build", f"--tag={tag}", toml='[run]\nbackend = "fake"\n')
+    assert code == 1 and not calls
+
+
+def test_firecracker_only_supports_the_default_tag(ccd, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("ccd.backends.firecracker.FirecrackerBackend.check_available", lambda self: None)
+    (tmp_path / "app").mkdir()
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", "--tag", "next")
+    assert code == 1 and not calls and "keeps a single image" in capsys.readouterr().err
+
+    code, calls = ccd("build", "--tag", "next", toml='[build]\nbackend = "fake-build"\n[run]\nbackend = "firecracker"\n')
+    assert code == 1 and not calls and "keeps a single image" in capsys.readouterr().err  # before anything was built
+
+
+def test_build_tag_reaches_the_build_request(ccd):
+    code, calls = ccd("build", "--tag", "next", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n')
+
+    assert code == 0
+    (request,) = [request for _, op, request in calls if op == "build"]
+    assert request.tag == "next" and request.image_name == "ccd"
+
+
+def test_status_shows_the_requested_tag(ccd, capsys):
+    ccd("status", "--tag", "next", toml='[run]\nbackend = "fake"\n')
+
+    assert "Image 'ccd:next' in fake: id-1" in capsys.readouterr().out
