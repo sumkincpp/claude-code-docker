@@ -46,6 +46,19 @@ class BuildahBackend(Backend):
         except subprocess.CalledProcessError as e:
             raise BackendError(f"Tagging failed: {(e.stderr or '').strip() or f'exit code {e.returncode}'}") from e
 
+    def read_image_file(self, name: str, tag: str, path: str, options: dict) -> str:
+        container = subprocess.run(["buildah", "from", f"localhost/{image_ref(name, tag)}"], capture_output=True, text=True, check=False)
+        if container.returncode:
+            raise BackendError(f"Reading {path} failed: {container.stderr.strip() or f'exit code {container.returncode}'}")
+        working = container.stdout.strip()
+        try:
+            result = subprocess.run(["buildah", "run", working, "--", "cat", path], capture_output=True, text=True, check=False)
+        finally:
+            subprocess.run(["buildah", "rm", working], capture_output=True, check=False)
+        if result.returncode:
+            raise BackendError(f"Reading {path} failed: {result.stderr.strip() or f'exit code {result.returncode}'}")
+        return result.stdout
+
     def built_image_id(self, request: BuildRequest) -> str:
         result = subprocess.run(["buildah", "images", "--noheading", "--format", "{{.ID}}", f"localhost/{image_ref(request.image_name, request.tag)}"], capture_output=True, text=True, check=False)
         return result.stdout.strip()

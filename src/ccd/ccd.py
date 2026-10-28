@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import logging
 import sys
 import tempfile
@@ -20,7 +21,7 @@ from ccd.config import (
     validate_tag,
 )
 from ccd.features import Feature, FeatureError, known_versions, load_features, select
-from ccd.features.render import render_dockerfile, stage_context
+from ccd.features.render import INSTALLED_FILE, render_dockerfile, stage_context
 from ccd.plugin import (
     AttachRequest,
     Backend,
@@ -346,6 +347,26 @@ def show_features(features: dict[str, Feature]) -> None:
     print_table(rows)
 
 
+def show_metadata(run_config: RunConfig, build_override: str | None = None, tag: str | None = None, as_json: bool = False) -> None:
+    """What the built image contains: the list ccd wrote to the image at build time."""
+    build_config = BuildConfig.load(Path(CONFIG_FILE_NAME))
+    tag = tag or build_config.tag or DEFAULT_TAG
+    build_name, _ = resolve_backends(run_config, build_config, build_override)
+    backend, options = load_backend(build_name, run_config)
+    require_tag_support(backend, tag)
+    text = backend.read_image_file(IMAGE_NAME, tag, INSTALLED_FILE, options)
+    if as_json:
+        print(text, end="")
+        return
+    try:
+        records = [json.loads(line) for line in text.splitlines() if line.strip()]
+    except ValueError as e:
+        raise BackendError(f"{INSTALLED_FILE} in {image_ref(IMAGE_NAME, tag)} is not valid: {e}") from e
+    rows = [("FEATURE", "RESOLVED", "SOURCE")]
+    rows.extend((r["name"], r.get("resolved") or "-", r.get("source", "-")) for r in records)
+    print_table(rows)
+
+
 def show_backends(run_config: RunConfig) -> None:
     rows = [("BACKEND", "CAN", "STATE")]
     for name, entry in sorted(available_backends().items()):
@@ -545,6 +566,10 @@ def main() -> None:
 
     command_parser.add_parser("backends", help="List installed backend plugins and whether they are ready")
     command_parser.add_parser("features", help="List the features the image can be built from")
+    metadata_parser = command_parser.add_parser("metadata", help="Show what the built image has installed (features and their resolved versions)")
+    metadata_parser.add_argument("--backend", default=None, help="Build backend holding the image (default: as configured, like ccd build --backend)")
+    metadata_parser.add_argument("--tag", default=None, help=f"Image tag to look at (default: [build] tag from {CONFIG_FILE_NAME}, else {DEFAULT_TAG})")
+    metadata_parser.add_argument("--json", action="store_true", help="Print the raw list, one JSON object per line, with the install commands")
     tag_parser = command_parser.add_parser("tag", help="Give an image tag another tag, for example ccd tag next latest to promote a build")
     tag_parser.add_argument("source", help="Existing tag")
     tag_parser.add_argument("target", help="Tag to create or replace")
@@ -578,6 +603,8 @@ def main() -> None:
             show_backends(run_config)
         elif args.command == "features":
             show_features(features)
+        elif args.command == "metadata":
+            show_metadata(run_config, args.backend, args.tag, args.json)
         elif args.command == "tag":
             tag_image(run_config, args.source, args.target, args.backend)
         elif args.command == "images":

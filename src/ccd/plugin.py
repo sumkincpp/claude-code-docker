@@ -198,6 +198,10 @@ class Backend(ABC):
         """Builder side: give the image tagged `source` the additional tag `target`, replacing it if it exists."""
         raise BackendError(f"Backend '{self.name}' cannot tag images")
 
+    def read_image_file(self, name: str, tag: str, path: str, options: dict[str, Any]) -> str:
+        """Builder side: contents of the file `path` in the image tagged `tag`, without starting its entrypoint."""
+        raise BackendError(f"Backend '{self.name}' cannot read files from images")
+
     def describe_image(self, built_id: str, options: dict[str, Any]) -> str:
         """Runner side: how its prepared image relates to the builder's current image `built_id` (for `ccd status`)."""
         return ""

@@ -1217,3 +1217,30 @@ def test_tag_command_rejects_bad_tags_and_backends_that_keep_one_image(ccd, monk
 
     code, _ = ccd("tag", "next", "latest", toml='[build]\nbackend = "firecracker"\n[run]\nbackend = "firecracker"\n')
     assert code == 1 and "keeps a single image" in capsys.readouterr().err
+
+
+def test_metadata_lists_the_features_of_the_built_image(ccd, capsys):
+    code, calls = ccd("metadata", "--tag", "next", toml='[build]\nbackend = "fake"\n')
+
+    out = capsys.readouterr().out.splitlines()
+    assert code == 0 and calls == [("fake", "read", ("next", "/metadata/installed.jsonl"))]
+    assert out[0].split() == ["FEATURE", "RESOLVED", "SOURCE"]
+    assert out[1].split(None, 1)[0] == "go" and "go version go1.24.0 linux/arm64" in out[1]
+    assert out[2].split() == ["local-claude", "-", "bundled"]
+
+
+def test_metadata_json_prints_the_raw_list(ccd, capsys):
+    ccd("metadata", "--json", toml='[build]\nbackend = "fake"\n')
+
+    out = capsys.readouterr().out
+    assert out.startswith('{"name": "go"') and '"install": ["x"]' in out
+
+
+def test_docker_reads_a_file_from_the_image_without_its_entrypoint(monkeypatch):
+    from ccd.backends.docker import DockerBackend
+
+    seen = []
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: seen.append(cmd) or __import__("subprocess").CompletedProcess(cmd, 0, "data", ""))
+
+    assert DockerBackend().read_image_file("ccd", "next", "/metadata/installed.jsonl", {}) == "data"
+    assert seen[0][1:5] == ["run", "--rm", "--entrypoint", "cat"] and seen[0][-2:] == ["ccd:next", "/metadata/installed.jsonl"]

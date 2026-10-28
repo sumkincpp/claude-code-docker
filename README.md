@@ -196,6 +196,7 @@ ccd build --no-cooldown pi
 - Use ignore or force-fix flags per component `--npm-audit-ignore-components`/`--npm-audit-force-fix-components` to ignore/force fix component.
 - Use `--no-cooldown <component>` to bypass the release-age gate for a specific component (e.g. when a patched version was just released).
 - Resolution metadata is saved under /metadata/
+- `ccd metadata` shows it (`--json` for the raw list, `--tag` for another tag). `/metadata/installed.jsonl` in the image lists every installed feature, one JSON line each: name, description, source, the install commands and the resolved version (the first line of its check command)
 
 #### Other runtimes (uv, Rust, nvm)
 

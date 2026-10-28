@@ -152,6 +152,13 @@ class DockerBackend(Backend):
         except subprocess.CalledProcessError as e:
             raise BackendError(f"Tagging failed: {(e.stderr or '').strip() or f'exit code {e.returncode}'}") from e
 
+    def read_image_file(self, name: str, tag: str, path: str, options: dict) -> str:
+        cmd = [self.cli, "run", "--rm", "--entrypoint", "cat", self.image_ref(name, tag), path]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode:
+            raise BackendError(f"Reading {path} failed: {result.stderr.strip() or f'exit code {result.returncode}'}")
+        return result.stdout
+
     def list_running(self) -> list[str]:
         cmd = [self.cli, "ps", "--format", "{{.Names}}"]
         try:

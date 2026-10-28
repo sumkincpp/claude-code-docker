@@ -71,6 +71,12 @@ class RecordingBackend(plugin.Backend):
     def tag_image(self, name, source, target, options):
         CALLS.append((self.name, "tag", (source, target)))
 
+    installed = '{"name": "go", "source": "bundled", "install": ["x"], "resolved": "go version go1.24.0 linux/arm64"}\n{"name": "local-claude", "source": "bundled", "install": [], "resolved": ""}\n'
+
+    def read_image_file(self, name, tag, path, options):
+        CALLS.append((self.name, "read", (tag, path)))
+        return self.installed
+
     def prune(self, options, dry_run):
         CALLS.append((self.name, "prune", dry_run))
         return ["removed leftover"]
