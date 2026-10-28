@@ -55,6 +55,11 @@ def version_variable(name: str) -> str:
     return name.upper().replace("-", "_") + "_VERSION"
 
 
+def known_versions(features: dict[str, Feature]) -> dict[str, str]:
+    """Every selectable version across the features: name -> default."""
+    return {key: default for feature in features.values() for key, default in feature.versions.items()}
+
+
 def _commands(value: object, where: str) -> tuple[str, ...]:
     commands = [value] if isinstance(value, str) else value
     if not isinstance(commands, list) or not all(isinstance(c, str) and c.strip() for c in commands):

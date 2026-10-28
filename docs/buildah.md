@@ -1,6 +1,6 @@
 # Building with buildah
 
-`buildah` builds the project `Dockerfile` without a Docker daemon. ccd uses it as a *build* backend and hands the image to a runtime
+`buildah` builds the Dockerfile that ccd generates from the features, without a Docker daemon. ccd uses it as a *build* backend and hands the image to a runtime
 backend (today: `firecracker`). Docker is not needed on the host in that setup, but see [Known limits](#known-limits).
 
 ```toml
@@ -99,7 +99,7 @@ ccd .                               # runs on the configured run backend
 
 `ccd build` with buildah does three things:
 
-1. `buildah bud --layers -t localhost/ccd …`: builds the Dockerfile (layer cache enabled).
+1. `buildah bud --layers -t localhost/ccd …`: builds the generated Dockerfile in its staged build context (layer cache enabled).
 2. `buildah bud … -f Dockerfile.rootfs`: adds the VM layer (`localhost/ccd-vm`, see below).
 3. `buildah run --volume <cache>:/out … mksquashfs`: packs the VM image into `~/.cache/ccd/firecracker/rootfs.squashfs`.
 
@@ -192,7 +192,7 @@ An interrupted build can leave an incomplete layer; buildah prints `Found incomp
 - The buildah route was written from tool documentation and ccd's mocked tests; the only measured result on real hardware is the
   `vfs` slowness above. Report problems with the failing command's output.
 - Not every BuildKit feature works on older packaged buildah versions. `RUN --mount=type=cache,…` worked on a Raspberry Pi OS
-  buildah (the build got through all npm/pnpm steps), but heredocs (`RUN cat <<'EOF'`) did not, so the Dockerfile copies
-  `docker/ccd-entrypoint` instead of writing it with a heredoc.
+  buildah (the build got through all npm/pnpm steps), but heredocs (`RUN cat <<'EOF'`) did not, so the generated Dockerfile copies
+  the entrypoint from `src/ccd/features/core/ccd-entrypoint` instead of writing it with a heredoc.
 - A cold build on a Raspberry Pi with the `overlay` driver took about 50 minutes to reach step 56 of 77.
 - `buildah` only builds. Running needs another backend: `[run] backend = "firecracker"`.

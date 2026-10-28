@@ -5,7 +5,7 @@ import subprocess
 from dataclasses import replace
 from datetime import datetime
 
-from ccd.backends.common import to_docker_build_args
+from ccd.backends.common import build_inputs, to_docker_build_args
 from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, ImageInfo, RunRequest, parse_size, parse_time
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,8 @@ class BuildahBackend(Backend):
 
     def build(self, request: BuildRequest) -> None:
         # `localhost/` keeps later `buildah from` lookups from trying a registry
-        cmd = ["buildah", "bud", "--layers", "-t", f"localhost/{request.image_name}", "-f", "Dockerfile", *to_docker_build_args(request.config, request.extra_args), "."]
+        dockerfile, context = build_inputs(request)
+        cmd = ["buildah", "bud", "--layers", "-t", f"localhost/{request.image_name}", "-f", str(dockerfile), *to_docker_build_args(request.config, request.extra_args), str(context)]
         logger.debug("Build command: %s", cmd)
         try:
             subprocess.run(cmd, check=True)

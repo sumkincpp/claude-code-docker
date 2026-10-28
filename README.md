@@ -69,8 +69,8 @@ At runtime each binary in `~/.local/bin/` is a small wrapper script pointing int
 
 ## Backends
 
-CCD builds the image and runs it through pluggable *backends*. Choose them in `ccd.toml`; the Dockerfile stays the single
-definition of the environment.
+CCD builds the image and runs it through pluggable *backends*. Choose them in `ccd.toml`. The image is described by
+[features](docs/features.md); ccd generates the Dockerfile from them.
 
 ```toml
 [build]
@@ -143,19 +143,13 @@ See [docs/buildah.md](docs/buildah.md) for installing and configuring buildah an
 ccd build [--with feature1,feature2,...] [--without feature3,feature4,...]
 ```
 
-- `--with`: Comma-separated feature list to include (default: all features).
-- `--without`: Comma-separated feature list to exclude.
+- `--with`: Comma-separated features to install, plus whatever they require (default: all default features).
+- `--without`: Comma-separated features to leave out. Leaving out something a selected feature needs is an error.
+- `--print-dockerfile`: Print the generated Dockerfile and exit, nothing is built.
 
-Available build features:
-
-- `rust`
-- `claude`
-- `codex`
-- `gemini`
-- `jules`
-- `opencode`
-- `copilot`
-- `pi`
+Everything installable is a feature: `nvm`, `node`, `pnpm`, `uv`, `rust`, `claude`, `codex`, `gemini`, `copilot`,
+`opencode`, `pi`, `local-claude`, and `jules` (off by default). You can add your own under `.ccd/features/`, see the
+[features guide](docs/features.md).
 
 Examples:
 
@@ -210,7 +204,7 @@ Pin them explicitly in `ccd.toml` if reproducibility matters:
 ```toml
 [versions]
 uv   = "0.7.2"
-# node and nvm are pinned in the Dockerfile ARGs; override via --build-arg at build time
+# node, nvm, npm and pnpm default to the values in their features; pin them here too
 ```
 
 Or pass build args directly:
@@ -391,7 +385,7 @@ npm_audit_ignore_components = []
 npm_audit_force_fix_components = []
 
 [versions]
-# Pin individual tool versions (omit to use Dockerfile defaults)
+# Pin individual tool versions (omit to use the feature defaults)
 # claude  = "latest"
 # codex   = "latest"
 # node    = "24"

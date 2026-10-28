@@ -1,10 +1,20 @@
 """Helpers shared by the backends that build the project Dockerfile."""
 
 import logging
+from pathlib import Path
 
-from ccd.config import FEATURE_BUILD_ARGS, VERSION_BUILD_ARGS, BuildConfig
+from ccd.config import BuildConfig
+from ccd.features import version_variable
+from ccd.plugin import BackendError, BuildRequest
 
 logger = logging.getLogger(__name__)
+
+
+def build_inputs(request: BuildRequest) -> tuple[Path, Path]:
+    """The generated Dockerfile and its build context."""
+    if request.dockerfile is None or request.context is None:
+        raise BackendError("Nothing to build: the build request has no Dockerfile")
+    return request.dockerfile, request.context
 
 
 def to_docker_build_args(config: BuildConfig, extra_args: list[str]) -> list[str]:
@@ -14,11 +24,6 @@ def to_docker_build_args(config: BuildConfig, extra_args: list[str]) -> list[str
     if config.force:
         logger.debug("Force flag set, disabling Docker layer caching")
         result.append("--no-cache")
-
-    flags = config.feature_flags()
-    if flags is not None:
-        for feature, build_arg in sorted(FEATURE_BUILD_ARGS.items()):
-            result.extend(["--build-arg", f"{build_arg}={'1' if flags[feature] else '0'}"])
 
     logger.debug("Setting NPM_CLI_MIN_RELEASE_AGE_DAYS=%s", config.npm_min_release_age_days)
     result.extend(["--build-arg", f"NPM_CLI_MIN_RELEASE_AGE_DAYS={config.npm_min_release_age_days}"])
@@ -33,9 +38,9 @@ def to_docker_build_args(config: BuildConfig, extra_args: list[str]) -> list[str
         logger.debug("Setting NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS=%s", config.npm_min_release_age_ignore_components)
         result.extend(["--build-arg", f"NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS={','.join(sorted(config.npm_min_release_age_ignore_components))}"])
 
-    for component, build_arg in sorted(VERSION_BUILD_ARGS.items()):
-        if component in config.versions:
-            logger.debug("Setting %s=%s", build_arg, config.versions[component])
-            result.extend(["--build-arg", f"{build_arg}={config.versions[component]}"])
+    for component, version in sorted(config.versions.items()):
+        build_arg = version_variable(component)
+        logger.debug("Setting %s=%s", build_arg, version)
+        result.extend(["--build-arg", f"{build_arg}={version}"])
 
     return result

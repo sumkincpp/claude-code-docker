@@ -2,6 +2,7 @@
 import argparse
 import logging
 import sys
+import tempfile
 from pathlib import Path
 from typing import List
 
@@ -10,12 +11,13 @@ from ccd.config import (
     CONTAINER_NAME_BASE,
     DEFAULT_BACKEND,
     IMAGE_NAME,
-    VERSION_BUILD_ARGS,
     BuildConfig,
     PathSpec,
     RunConfig,
     RunParameters,
 )
+from ccd.features import Feature, FeatureError, known_versions, load_features, select
+from ccd.features.render import render_dockerfile, stage_context
 from ccd.plugin import (
     AttachRequest,
     Backend,
@@ -344,17 +346,32 @@ def show_status(run_config: RunConfig, build_override: str | None = None) -> Non
         print(f"Running: {', '.join(running) if running else 'nothing'}")
 
 
-def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: list[str]) -> None:
+def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: list[str], features: dict[str, Feature]) -> None:
     """Build with the build backend; when it differs from the run backend, hand the image over."""
-    config = BuildConfig.load(Path(CONFIG_FILE_NAME)).apply_cli(args)
+    config = BuildConfig.load(Path(CONFIG_FILE_NAME)).apply_cli(args, known_versions(features))
     config.validate()
     logger.debug("Effective build config: %s", config)
+
+    unknown = sorted(set(config.versions) - set(known_versions(features)))
+    if unknown:
+        raise BackendError(f"Unknown version(s) in [versions]: {', '.join(unknown)} (available: {', '.join(sorted(known_versions(features)))})")
+    try:
+        selected = select(features, config.with_features, config.without_features)
+    except FeatureError as e:
+        raise BackendError(str(e)) from e
+    logger.info("Features: %s", ", ".join(f.name for f in selected))
+
+    if args.print_dockerfile:
+        print(render_dockerfile(selected), end="")
+        return
 
     build_name, run_name = resolve_backends(run_config, config, args.backend)
 
     builder, builder_options = load_backend(build_name, run_config)
-    with timed(f"Build ({build_name})", logger):
-        builder.build(BuildRequest(image_name=IMAGE_NAME, config=config, extra_args=extra_args, options=builder_options))
+    with timed(f"Build ({build_name})", logger), tempfile.TemporaryDirectory(prefix="ccd-build-") as context:
+        dockerfile = stage_context(selected, Path(context))
+        request = BuildRequest(image_name=IMAGE_NAME, config=config, extra_args=extra_args, options=builder_options, dockerfile=dockerfile, context=Path(context))
+        builder.build(request)
 
     if build_name == run_name:
         return
@@ -382,6 +399,12 @@ def split_command(argv: list[str]) -> tuple[list[str], list[str]]:
 
 def main() -> None:
     """Main entry point for the ccd command line tool"""
+    try:
+        features = load_features()
+    except FeatureError as e:
+        logger.error("%s", e)
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(description="Run ccd containers on pluggable backends")
 
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity level (can be used multiple times: -v, -vv, -vvv)")
@@ -398,12 +421,12 @@ def main() -> None:
     build_parser.add_argument(
         "--with",
         dest="with_features",
-        help="Comma-separated feature list to include in the image (default: all features)",
+        help="Comma-separated features to install, plus what they require (default: all default features)",
     )
     build_parser.add_argument(
         "--without",
         dest="without_features",
-        help="Comma-separated feature list to exclude from the image",
+        help="Comma-separated features to leave out of the image",
     )
     build_parser.add_argument(
         "--force",
@@ -434,12 +457,18 @@ def main() -> None:
         dest="npm_audit_force_fix_components",
         help="Comma-separated npm CLI components that should run npm audit fix --force before final audit checks",
     )
-    # Add version arguments
-    for component in VERSION_BUILD_ARGS.keys():
+    build_parser.add_argument(
+        "--print-dockerfile",
+        dest="print_dockerfile",
+        action="store_true",
+        help="Print the Dockerfile generated for the selected features and exit",
+    )
+    # Every feature has a version, plus any extra ones it declares
+    for component, default in known_versions(features).items():
         build_parser.add_argument(
             f"--{component}-version",
-            dest=f"{component}_version",
-            help=f"Version of {component} to install (default: Dockerfile value)",
+            dest=f"{component.replace('-', '_')}_version",
+            help=f"Version of {component} to install (default: {default})",
         )
 
     home_folder = Path.home() / ".claude-code-docker"
@@ -489,7 +518,7 @@ def main() -> None:
             show_status(run_config, args.backend)
         elif args.command == "build":
             logger.debug("Executing build command")
-            build_image(args, run_config, unknown)
+            build_image(args, run_config, unknown, features)
         elif args.command in ("run", "."):
             logger.debug("Executing run command")
             backend, backend_options = load_backend(run_backend_name(args, run_config), run_config)

@@ -297,7 +297,8 @@ def test_buildah_builds_and_firecracker_packs_from_containers_storage(ccd, tmp_p
     assert code == 0
     assert not any(cmd[0] == "docker" for cmd in commands)
     bud, images, vm_layer, from_, run, rm = commands
-    assert bud[:6] == ["buildah", "bud", "--layers", "-t", "localhost/ccd", "-f"] and bud[-1] == "."
+    assert bud[:6] == ["buildah", "bud", "--layers", "-t", "localhost/ccd", "-f"]
+    assert bud[6] == f"{bud[-1]}/Dockerfile"  # the generated Dockerfile in its staged build context
     assert images[-1] == "localhost/ccd"
     assert vm_layer[:5] == ["buildah", "bud", "--layers", "-t", "localhost/ccd-vm"] and "BASE_IMAGE=localhost/ccd" in vm_layer
     assert from_ == ["buildah", "from", "localhost/ccd-vm"]
@@ -882,18 +883,79 @@ def test_optional_missing_mount_is_skipped_and_required_folder_is_created(ccd, t
     assert required.is_dir() and not optional.exists()
 
 
-def test_declared_agents_are_known_build_features():
-    from ccd.config import DEFAULTS_PATH, FEATURE_BUILD_ARGS, RunConfig
+def test_declared_agents_are_known_features():
+    from ccd.config import DEFAULTS_PATH, RunConfig
+    from ccd.features import load_features
 
-    assert set(RunConfig.load(DEFAULTS_PATH).agent_mounts) <= set(FEATURE_BUILD_ARGS)
+    assert set(RunConfig.load(DEFAULTS_PATH).agent_mounts) <= set(load_features())
 
 
-def test_verbose_run_lists_agents_and_mounts(ccd, tmp_path, caplog):
-    import logging
-    (tmp_path / "app").mkdir()
+def _build_command(ccd, *args, toml=""):
+    """The docker build command line for `ccd build` on the (fake) docker backend, and the Dockerfile it was given."""
+    import shlex
+    import subprocess
+    from unittest import mock
 
-    with caplog.at_level(logging.INFO):
-        ccd("-v", "run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml='[run]\nagents = ["codex"]\n')
+    captured = {}
 
-    assert "Agents: codex" in caplog.text
-    assert "-> /home/user/.codex" in caplog.text and "-> /app" in caplog.text
+    def fake_run(command, *a, **kw):
+        captured["command"] = shlex.split(command) if isinstance(command, str) else command
+        captured["dockerfile"] = Path(captured["command"][captured["command"].index("-f") + 1]).read_text()
+        return subprocess.CompletedProcess(command, 0)
+
+    with mock.patch("subprocess.run", fake_run), mock.patch("ccd.backends.docker.DockerBackend.check_available", lambda self: None):
+        code, _ = ccd("build", *args, toml='[run]\nbackend = "docker"\n' + toml)
+    return code, captured
+
+
+def test_build_renders_the_selected_features_into_the_dockerfile(ccd):
+    code, built = _build_command(ccd, "--without", "rust,gemini")
+
+    assert code == 0
+    assert "claude --version" in built["dockerfile"] and "rustup" not in built["dockerfile"] and "GEMINI_VERSION" not in built["dockerfile"]
+    assert built["command"][-1] != "."  # the staged build context, not the repo root
+
+
+def test_build_with_installs_only_those_features_and_what_they_require(ccd):
+    _, built = _build_command(ccd, "--with", "codex")
+
+    names = [line.split(": ")[1].split(" ")[0] for line in built["dockerfile"].splitlines() if line.startswith("# feature: ")]
+    assert names == ["nvm", "node", "pnpm", "codex"]
+
+
+def test_build_excluding_a_required_feature_fails_naming_both(ccd, capsys):
+    code, _ = _build_command(ccd, "--without", "node")
+
+    assert code == 1 and "cannot exclude 'node': required by" in capsys.readouterr().err
+
+
+def test_version_flags_and_config_become_build_args(ccd):
+    _, built = _build_command(ccd, "--claude-version", "2.0.1", "--node-version", "22.1.0", "--npm-version", "11.0.0", toml='[versions]\nuv = "0.5.0"\n')
+
+    args = built["command"]
+    values = {args[i + 1] for i, a in enumerate(args) if a == "--build-arg"}
+    assert {"CLAUDE_VERSION=2.0.1", "NODE_VERSION=22.1.0", "NPM_VERSION=11.0.0", "UV_VERSION=0.5.0"} <= values
+
+
+def test_unknown_version_in_config_fails(ccd, capsys):
+    code, _ = _build_command(ccd, toml='[versions]\nnope = "1"\n')
+
+    assert code == 1 and "Unknown version(s)" in capsys.readouterr().err
+
+
+def test_print_dockerfile_prints_without_building(ccd, capsys):
+    code, calls = ccd("build", "--print-dockerfile", "--with", "uv", toml='[run]\nbackend = "fake"\n')
+
+    out = capsys.readouterr().out
+    assert code == 0 and not calls
+    assert out.startswith("# syntax=docker/dockerfile:1") and "# feature: uv" in out and "claude" not in out
+
+
+def test_project_features_can_add_to_the_image(ccd, tmp_path):
+    (tmp_path / ".ccd" / "features" / "hello").mkdir(parents=True)
+    (tmp_path / ".ccd" / "features" / "hello" / "feature.toml").write_text('version = false\n[install]\ncommand = "echo hello"\n')
+
+    # the helper rewrites ccd.toml but not .ccd/, which stays in the working directory
+    _, built = _build_command(ccd, "--with", "hello")
+
+    assert "# feature: hello" in built["dockerfile"] and "echo hello" in built["dockerfile"]

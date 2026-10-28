@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import sys
 
-from ccd.backends.common import to_docker_build_args
+from ccd.backends.common import build_inputs, to_docker_build_args
 from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, ImageInfo, RunRequest, parse_time
 
 logger = logging.getLogger(__name__)
@@ -42,8 +42,9 @@ class DockerBackend(Backend):
         """Build the Docker image"""
         logger.info("Building Docker image: %s", request.image_name)
 
+        dockerfile, context = build_inputs(request)
         docker_args = shlex.join(to_docker_build_args(request.config, request.extra_args))
-        build_command = f"{self.cli} build {docker_args} -f Dockerfile -t {shlex.quote(self.image_ref(request.image_name))} ."
+        build_command = f"{self.cli} build {docker_args} -f {shlex.quote(str(dockerfile))} -t {shlex.quote(self.image_ref(request.image_name))} {shlex.quote(str(context))}"
         logger.debug("Build command: %s", build_command)
 
         try:

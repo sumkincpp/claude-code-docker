@@ -53,6 +53,8 @@ class BuildRequest:
     config: BuildConfig
     extra_args: list[str] = field(default_factory=list)
     options: dict[str, Any] = field(default_factory=dict)
+    dockerfile: Path | None = None  # generated from the selected features, set when there is something to build
+    context: Path | None = None
 
 
 @dataclass

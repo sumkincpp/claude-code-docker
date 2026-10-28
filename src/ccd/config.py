@@ -3,7 +3,7 @@ import logging
 import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import List, Literal
+from typing import Iterable, List, Literal
 
 try:
     import tomllib
@@ -23,30 +23,6 @@ DEFAULT_BACKEND = "docker"
 DEFAULTS_PATH = Path(__file__).with_name("defaults.toml")
 # Exported images handed from a build backend to a different run backend
 
-FEATURE_BUILD_ARGS = {
-    "rust": "WITH_RUST",
-    "claude": "WITH_CLAUDE",
-    "codex": "WITH_CODEX",
-    "gemini": "WITH_GEMINI",
-    "opencode": "WITH_OPENCODE",
-    "copilot": "WITH_COPILOT",
-    "jules": "WITH_JULES",
-    "pi": "WITH_PI",
-}
-VERSION_BUILD_ARGS = {
-    "nvm": "NVM_VERSION",
-    "node": "NVM_NODE_VERSION",
-    "npm": "NPM_VERSION",
-    "uv": "UV_VERSION",
-    "rustup": "RUSTUP_VERSION",
-    "claude": "CLAUDE_VERSION",
-    "codex": "CODEX_VERSION",
-    "gemini": "GEMINI_VERSION",
-    "opencode": "OPENCODE_VERSION",
-    "copilot": "COPILOT_VERSION",
-    "jules": "JULES_VERSION",
-    "pi": "PI_VERSION",
-}
 
 logger = logging.getLogger(__name__)
 
@@ -101,10 +77,10 @@ class BuildConfig:
             npm_audit_ignore_components=as_set(build.get("npm_audit_ignore_components", [])),
             npm_audit_force_fix_components=as_set(build.get("npm_audit_force_fix_components", [])),
             npm_min_release_age_ignore_components=as_set(build.get("npm_min_release_age_ignore_components", [])),
-            versions={k: str(v) for k, v in versions_data.items() if k in VERSION_BUILD_ARGS},
+            versions={k: str(v) for k, v in versions_data.items()},
         )
 
-    def apply_cli(self, args: argparse.Namespace) -> "BuildConfig":
+    def apply_cli(self, args: argparse.Namespace, version_names: Iterable[str] = ()) -> "BuildConfig":
         """Return a new config with explicitly provided CLI args applied on top."""
         config = replace(self)
 
@@ -123,8 +99,8 @@ class BuildConfig:
         if args.npm_min_release_age_ignore_components is not None:
             config.npm_min_release_age_ignore_components = _parse_comma_set(args.npm_min_release_age_ignore_components)
 
-        for component in VERSION_BUILD_ARGS:
-            version = getattr(args, f"{component}_version", None)
+        for component in version_names:
+            version = getattr(args, f"{component.replace('-', '_')}_version", None)
             if version is not None:
                 config.versions[component] = version
 
@@ -134,22 +110,6 @@ class BuildConfig:
         if self.with_features is not None and self.without_features is not None:
             logger.error("Use only one of --with or --without")
             sys.exit(1)
-        for features in (self.with_features, self.without_features):
-            if features is None:
-                continue
-            unknown = features - set(FEATURE_BUILD_ARGS.keys())
-            if unknown:
-                logger.error("Unknown feature(s): %s", ", ".join(sorted(unknown)))
-                logger.error("Available features: %s", ", ".join(sorted(FEATURE_BUILD_ARGS.keys())))
-                sys.exit(1)
-
-    def feature_flags(self) -> dict[str, bool] | None:
-        """Resolve --with/--without into {feature: enabled}; None means 'use the image defaults'."""
-        if self.with_features is not None:
-            return {f: f in self.with_features for f in FEATURE_BUILD_ARGS}
-        if self.without_features is not None:
-            return {f: f not in self.without_features for f in FEATURE_BUILD_ARGS}
-        return None
 
 
 @dataclass

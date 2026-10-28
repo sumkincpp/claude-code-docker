@@ -68,7 +68,7 @@ Commands run with:
 
 Every feature X automatically has:
 - an environment variable `X_VERSION` (dashes become underscores, `local-claude` gives `LOCAL_CLAUDE_VERSION`)
-- the flag `--x-version` and the setting `x` under `[versions]` in `ccd.toml` (once wired into the build command)
+- the flag `ccd build --x-version` and the setting `x` under `[versions]` in `ccd.toml`
 - the default `latest`
 
 So a manifest only says something when it differs:
@@ -130,4 +130,16 @@ version = false
 command = "echo hello"
 ```
 
-Check the manifest loads and see what it renders to before building.
+Then `ccd build --with hello --print-dockerfile` shows the generated Dockerfile with your feature in it, and `ccd build --with hello` builds it. A broken manifest stops ccd with an error that names the file.
+
+## Using features
+
+```bash
+ccd build                              # every default feature
+ccd build --with claude,uv             # only these, plus what they require (nvm, node and pnpm for claude)
+ccd build --without rust,gemini        # all defaults except these
+ccd build --claude-version 2.0.1       # a version, see Versions
+ccd build --print-dockerfile           # show the Dockerfile, build nothing
+```
+
+The same selection works in `ccd.toml` with `with_features` or `without_features` under `[build]`. Excluding a feature that a selected one requires stops the build and names both.
