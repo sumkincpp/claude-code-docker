@@ -8,11 +8,9 @@ from pathlib import Path
 from typing import List
 
 from ccd.config import (
-    BUILD_MODES,
     CONFIG_FILE_NAME,
     CONTAINER_NAME_BASE,
     DEFAULT_BACKEND,
-    DEFAULT_BUILD_MODE,
     DEFAULT_TAG,
     IMAGE_NAME,
     BuildConfig,
@@ -23,7 +21,7 @@ from ccd.config import (
     validate_tag,
 )
 from ccd.features import Feature, FeatureError, known_versions, load_features, select
-from ccd.features.render import INSTALLED_FILE, render_dockerfile, stage_context
+from ccd.features.render import DEFAULT_RENDERER, INSTALLED_FILE, RendererError, available_renderers, get_renderer
 from ccd.plugin import (
     AttachRequest,
     Backend,
@@ -437,8 +435,13 @@ def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: lis
         raise BackendError(str(e)) from e
     logger.info("Features: %s", ", ".join(f.name for f in selected))
 
+    try:
+        renderer = get_renderer(config.mode)
+    except RendererError as e:
+        raise BackendError(str(e)) from e
+
     if args.print_dockerfile:
-        print(render_dockerfile(selected, config.mode != "sequential"), end="")
+        print(renderer.render(selected), end="")
         return
 
     build_name, run_name = resolve_backends(run_config, config, args.backend)
@@ -456,7 +459,7 @@ def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: lis
             hand_over_after = False
 
     with timed(f"Build ({build_name})", logger), tempfile.TemporaryDirectory(prefix="ccd-build-") as context:
-        dockerfile = stage_context(selected, Path(context), config.mode != "sequential")
+        dockerfile = renderer.stage_context(selected, Path(context))
         request = BuildRequest(image_name=IMAGE_NAME, config=config, extra_args=extra_args, options=builder_options, dockerfile=dockerfile, context=Path(context), tag=tag)
         builder.build(request)
 
@@ -488,6 +491,7 @@ def main() -> None:
     command_parser = parser.add_subparsers(dest="command", required=True, help="Command to execute")
     command_parser.required = True
 
+    renderers = available_renderers()
     build_parser = command_parser.add_parser("build", help="Build the image")
     build_parser.add_argument(
         "--backend",
@@ -501,9 +505,9 @@ def main() -> None:
     )
     build_parser.add_argument(
         "--mode",
-        choices=BUILD_MODES,
+        choices=sorted(renderers),
         default=None,
-        help=f"parallel: one build stage per feature, independent ones are built at the same time; sequential: every feature in order in a single stage (default: [build] mode from {CONFIG_FILE_NAME}, else {DEFAULT_BUILD_MODE})",
+        help="; ".join(f"{name}: {renderer.description}" for name, renderer in sorted(renderers.items())) + f" (default: [build] mode from {CONFIG_FILE_NAME}, else {DEFAULT_RENDERER})",
     )
     build_parser.add_argument(
         "--with",

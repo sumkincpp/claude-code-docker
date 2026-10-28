@@ -22,8 +22,6 @@ CONFIG_FILE_NAME = "ccd.toml"
 GLOBAL_CONFIG_PATH = Path.home() / ".config" / "ccd" / "ccd.toml"
 DEFAULT_BACKEND = "docker"
 DEFAULT_TAG = "latest"
-BUILD_MODES = ("parallel", "sequential")  # one build stage per feature, or every feature in order in a single stage
-DEFAULT_BUILD_MODE = "parallel"
 TAG_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 # Exported images handed from a build backend to a different run backend
 
@@ -136,9 +134,6 @@ class BuildConfig:
     def validate(self) -> None:
         if self.with_features is not None and self.without_features is not None:
             logger.error("Use only one of --with or --without")
-            sys.exit(1)
-        if self.mode is not None and self.mode not in BUILD_MODES:
-            logger.error("Invalid build mode %r (expected one of: %s)", self.mode, ", ".join(BUILD_MODES))
             sys.exit(1)
         if self.tag is not None:
             try:

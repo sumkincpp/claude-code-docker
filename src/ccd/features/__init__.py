@@ -8,7 +8,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from ccd.config import MountConfig, _load_toml
 
@@ -250,6 +250,19 @@ def select(features: dict[str, Feature], with_names: set[str] | None = None, wit
             raise FeatureError(f"cannot exclude '{name}': required by '{needed[name]}'")
 
     return order(requested | set(needed), features)
+
+
+def dependencies(feature: Feature, selected: Sequence[Feature]) -> list[Feature]:
+    """Everything the feature requires, directly or not, in install order (the order of `selected`)."""
+    by_name = {f.name: f for f in selected}
+    seen: set[str] = set()
+    pending = list(feature.requires)
+    while pending:
+        name = pending.pop()
+        if name not in seen:
+            seen.add(name)
+            pending.extend(by_name[name].requires)
+    return [f for f in selected if f.name in seen]
 
 
 def order(names: set[str], features: dict[str, Feature]) -> list[Feature]:

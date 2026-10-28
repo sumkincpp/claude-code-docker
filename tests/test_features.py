@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from ccd.features import BUNDLED_DIR, FeatureError, load_features, select, version_variable
-from ccd.features.render import render_dockerfile, stage_context
+from ccd.features.render import Renderer, RendererError, available_renderers, get_renderer
 
 
 def write(root: Path, name: str, toml: str, assets: dict[str, str] | None = None) -> None:
@@ -127,7 +127,7 @@ def test_without_removes_a_default_but_not_a_needed_dependency(tmp_path):
 def render(tmp_path, **features: str) -> str:
     for name, toml in features.items():
         write(tmp_path, name, toml)
-    return render_dockerfile(select(load(tmp_path)))
+    return get_renderer().render(select(load(tmp_path)))
 
 
 def test_render_declares_each_arg_right_before_the_run_that_references_it(tmp_path):
@@ -180,7 +180,7 @@ def test_render_switches_user_for_root_installs_and_verifies_the_selection(tmp_p
 def test_disabled_features_leave_no_trace(tmp_path):
     features = load_features([(BUNDLED_DIR, "bundled")])
 
-    text = render_dockerfile(select(features, without_names={"rust", "gemini"}))
+    text = get_renderer().render(select(features, without_names={"rust", "gemini"}))
 
     assert "rustup" not in text and "gemini" not in text.lower() and "GEMINI_VERSION" not in text
     assert "claude --version" in text and "WITH_" not in text
@@ -189,7 +189,7 @@ def test_disabled_features_leave_no_trace(tmp_path):
 def test_stage_context_writes_dockerfile_core_files_and_assets(tmp_path):
     features = load_features([(BUNDLED_DIR, "bundled")])
 
-    dockerfile = stage_context(select(features), tmp_path / "ctx")
+    dockerfile = get_renderer().stage_context(select(features), tmp_path / "ctx")
 
     ctx = tmp_path / "ctx"
     assert dockerfile == ctx / "Dockerfile" and "COPY core/ccd-entrypoint" in dockerfile.read_text()
@@ -290,10 +290,56 @@ def test_every_bundled_feature_declares_its_paths_and_the_default_build_chains_o
     features = load_features([(BUNDLED_DIR, "bundled")])
     assert [name for name, f in features.items() if not f.paths] == []
 
-    text = render_dockerfile(select(features))
+    text = get_renderer().render(select(features))
 
     assert "FROM f-nvm AS f-node" in text and "FROM f-node AS f-pnpm" in text and "FROM f-pnpm AS f-claude" in text
     final = text[text.index("FROM pre AS final"):]
     assert "--from=f-node" not in final and "--from=f-nvm" not in final  # f-pnpm holds ~/.nvm with its own changes
     assert final.count("--from=f-pnpm /home/user/.nvm ") == 1
     assert "/metadata/pnpm-cli-resolution" in final
+
+
+def test_renderers_are_found_by_name_and_the_default_is_parallel():
+    assert sorted(available_renderers()) == ["parallel", "sequential"]
+    assert get_renderer().name == "parallel" and get_renderer("sequential").name == "sequential"
+
+    with pytest.raises(RendererError, match="Invalid build mode 'fast'.*parallel, sequential"):
+        get_renderer("fast")
+
+
+def test_the_two_built_in_renderers_differ_only_in_how_features_are_laid_out():
+    selected = select(load_features([(BUNDLED_DIR, "bundled")]), with_names={"claude"})
+
+    parallel = get_renderer("parallel").render(selected)
+    sequential = get_renderer("sequential").render(selected)
+
+    assert "AS f-claude" in parallel and "AS f-" not in sequential
+    for text in (parallel, sequential):
+        assert "FROM base AS pre" in text and "FROM pre AS final" in text and "# Record what is installed" in text
+    assert [line for line in sequential.splitlines() if line.startswith("# feature: ")] == [line for line in parallel.splitlines() if line.startswith("# feature: ")]
+
+
+def test_a_renderer_can_be_added_through_the_entry_point_group(monkeypatch):
+    class Mine(Renderer):
+        name = "mine"
+        description = "test renderer"
+
+        def render(self, selected):
+            return "mine: " + ",".join(f.name for f in selected)
+
+        def stage_context(self, selected, destination):
+            return destination
+
+    class EntryPoint:
+        name = "mine"
+
+        def load(self):
+            return Mine
+
+    monkeypatch.setattr("ccd.features.render.entry_points", lambda group: [EntryPoint()])
+    selected = select(load_features([(BUNDLED_DIR, "bundled")]), with_names={"go"})
+
+    assert get_renderer("mine").render(selected) == "mine: go"
+    assert sorted(available_renderers()) == ["mine", "parallel", "sequential"]
+    with pytest.raises(RendererError, match="mine, parallel, sequential"):
+        get_renderer("fast")

@@ -159,7 +159,7 @@ Rules:
 
 ## How features become a Dockerfile
 
-This is the `parallel` build mode, the default. `ccd build --mode sequential` (or `mode = "sequential"` under `[build]` in ccd.toml) ignores the paths and installs every feature in order in the single `pre` stage, with the same final checks: slower, but nothing is copied, which can win on slow storage or with a builder that cannot run stages at the same time.
+How the selection is laid out is up to a renderer, chosen with `ccd build --mode` or `mode` under `[build]`. This section is the `parallel` renderer, the default. `ccd build --mode sequential` (or `mode = "sequential"` under `[build]` in ccd.toml) ignores the paths and installs every feature in order in the single `pre` stage, with the same final checks: slower, but nothing is copied, which can win on slow storage or with a builder that cannot run stages at the same time.
 
 1. Select: the default features, or exactly the ones you ask for, plus whatever they require. Excluding something a selected feature needs is an error that names both.
 2. Order: requirements first, then by `order`, then by name, so the output is the same on every run.
@@ -172,6 +172,26 @@ This is the `parallel` build mode, the default. `ccd build --mode sequential` (o
 Each block declares its build args right before its RUN and the RUN references each of them. A stage does not inherit build args, so each stage declares the ones it uses. Docker then reuses a layer as long as its text, its args and its assets are unchanged and everything before it in the same stage is too, so changing one version rebuilds that feature's stage and the final stage.
 
 Copying a big tree is not free (a few hundred MB of small files take minutes on slow storage), and a changed feature is copied again together with every copy after it. That is why `order` matters: give large trees that rarely change (node, rust, go) a lower number than the tools you update often.
+
+## Renderers
+
+The manifests, the selection and the order (`ccd.features`) know nothing about Dockerfiles. A renderer turns the selected features into build input, and `ccd build --mode` picks one by name:
+
+| Mode | Renderer | What it does |
+| --- | --- | --- |
+| parallel | `ParallelRenderer` | The default, see Paths and stages. |
+| sequential | `SequentialRenderer` | Every feature in order in one stage. |
+
+Both are small subclasses of `DockerfileRenderer` (`ccd/features/render/dockerfile.py`), which writes the head, `pre`, the stages, `final` and the tail, and only ask the subclass for a `Plan`: which features install in `pre`, which further stages there are, and what `final` copies. The instructions that install one feature are shared pure functions (`ccd/features/render/dialect.py`).
+
+Another renderer, which does not have to produce a Dockerfile, is a subclass of `Renderer` (`render` and `stage_context`) published in the `ccd.renderers` entry-point group of a package:
+
+```toml
+[project.entry-points."ccd.renderers"]
+mine = "mypackage.render:MyRenderer"
+```
+
+Then `ccd build --mode mine` uses it. Renderers do not know about backends.
 
 ## Writing a feature
 
