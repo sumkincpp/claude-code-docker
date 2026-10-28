@@ -1,0 +1,10 @@
+description = "Claude Code CLI"
+requires = ["pnpm"]
+[env]
+DISABLE_AUTOUPDATER = "1"
+
+[install]
+command = "ccd-npm-install claude @anthropic-ai/claude-code --binary claude --version \"$CLAUDE_VERSION\" --built-dependency"
+
+[verify]
+command = "claude --version"

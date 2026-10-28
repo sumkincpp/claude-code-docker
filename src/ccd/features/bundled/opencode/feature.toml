@@ -1,0 +1,8 @@
+description = "opencode CLI"
+requires = ["pnpm"]
+
+[install]
+command = "ccd-npm-install opencode opencode-ai --binary opencode --version \"$OPENCODE_VERSION\" --built-dependency"
+
+[verify]
+command = "opencode --version"

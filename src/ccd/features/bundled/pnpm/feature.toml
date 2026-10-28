@@ -1,0 +1,45 @@
+description = "npm and pnpm, plus ccd-npm-install for installing npm packages under the release-age and audit policy"
+requires = ["node"]
+order = 20
+
+# https://github.com/pnpm/pnpm/releases (pnpm itself is the main version, npm an extra one)
+[versions]
+npm = "latest"
+
+# Policy shared by every feature that installs with ccd-npm-install. Changing one rebuilds all of them.
+[args]
+NPM_CLI_MIN_RELEASE_AGE_DAYS = "7"
+NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS = ""
+PNPM_AUDIT_IGNORE_CVES = ""
+NPM_AUDIT_FORCE_FIX_COMPONENTS = ""
+
+[env]
+PNPM_CLI_INSTALL_ROOT = "/home/user/.local/share/ccd/pnpm-installs"
+PNPM_CLI_METADATA_ROOT = "/metadata"
+# Flat path directly under home so the cache mount does not create intermediate dirs owned by root.
+PNPM_STORE_DIR = "/home/user/.pnpm-store"
+
+[[cache]]
+id = "npm-cache"
+target = "~/.npm"
+
+[[cache]]
+id = "pnpm-store"
+target = "~/.pnpm-store"
+
+[install]
+command = [
+    "export NODE_USE_ENV_PROXY=1",
+    "mkdir -p /home/user/.local/bin",
+    'cp -p "$CCD_FEATURE_DIR"/* /home/user/.local/bin/',
+    "chmod +x /home/user/.local/bin/ccd-npm-install",
+    'NPM_RESOLVED=$(node /home/user/.local/bin/resolve-version.mjs npm "$NPM_VERSION" "$NPM_CLI_MIN_RELEASE_AGE_DAYS")',
+    'npm install -g "npm@${NPM_RESOLVED}"',
+    'PNPM_RESOLVED=$(node /home/user/.local/bin/resolve-version.mjs pnpm "$PNPM_VERSION" "$NPM_CLI_MIN_RELEASE_AGE_DAYS")',
+    "corepack enable",
+    'corepack prepare "pnpm@${PNPM_RESOLVED}" --activate',
+    'ln -sf "$(dirname "$(command -v node)")"/* /home/user/.local/bin/',
+]
+
+[verify]
+command = "npm -v"

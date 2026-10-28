@@ -1,0 +1,8 @@
+description = "OpenAI Codex CLI"
+requires = ["pnpm"]
+
+[install]
+command = "ccd-npm-install codex @openai/codex --binary codex --version \"$CODEX_VERSION\""
+
+[verify]
+command = "codex --version"

@@ -1,0 +1,8 @@
+description = "GitHub Copilot CLI"
+requires = ["pnpm"]
+
+[install]
+command = "ccd-npm-install copilot @github/copilot --binary copilot --version \"$COPILOT_VERSION\""
+
+[verify]
+command = "copilot --version"
