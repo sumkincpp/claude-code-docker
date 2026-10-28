@@ -3,6 +3,7 @@ import shutil
 import subprocess
 
 from ccd.backends.docker import DockerBackend
+from ccd.config import IMAGE_HOME_FOLDER
 from ccd.plugin import BackendError, BuildRequest
 
 logger = logging.getLogger(__name__)
@@ -25,8 +26,8 @@ class PodmanBackend(DockerBackend):
         # are not writable for it. Container root is your own host user, so by default the shell is root with the image user's
         # home (the mounted config lives there). [podman] user = "image" keeps the image's user instead.
         if root or options.get("user", "root") == "root":
-            logger.info("  Container user: root (your host user in rootless podman), HOME=/home/user")
-            return ["--user", "root", "-e", "HOME=/home/user"]
+            logger.info("  Container user: root (your host user in rootless podman), HOME=%s", IMAGE_HOME_FOLDER)
+            return ["--user", "root", "-e", f"HOME={IMAGE_HOME_FOLDER}"]
         return []
 
     def image_formats(self) -> list[str]:
