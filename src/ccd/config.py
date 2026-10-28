@@ -20,6 +20,7 @@ CONTAINER_NAME_BASE = "ccd"
 CONFIG_FILE_NAME = "ccd.toml"
 GLOBAL_CONFIG_PATH = Path.home() / ".config" / "ccd" / "ccd.toml"
 DEFAULT_BACKEND = "docker"
+DEFAULTS_PATH = Path(__file__).with_name("defaults.toml")
 # Exported images handed from a build backend to a different run backend
 
 FEATURE_BUILD_ARGS = {
@@ -159,10 +160,31 @@ class MountConfig:
     optional: bool = False
     readonly: bool = False
 
-    def to_path_spec(self) -> "PathSpec":
+    @classmethod
+    def parse(cls, raw: dict, where: str) -> "MountConfig":
+        if "host" not in raw or "container" not in raw:
+            logger.error("Each %s entry must have 'host' and 'container' keys", where)
+            sys.exit(1)
+        mount_type = raw.get("type", "folder")
+        if mount_type not in ("file", "folder"):
+            logger.error("Invalid mount type %r in %s (expected 'file' or 'folder')", mount_type, where)
+            sys.exit(1)
+        return cls(
+            host=raw["host"],
+            container=raw["container"],
+            type=mount_type,
+            optional=raw.get("optional", False),
+            readonly=raw.get("readonly", False),
+        )
+
+    def to_path_spec(self, home: Path) -> "PathSpec":
+        """Expand {home} (the host --home folder) in host and a leading ~/ (the image home) in container."""
+        container = self.container
+        if container == "~" or container.startswith("~/"):
+            container = IMAGE_HOME_FOLDER + container[1:]
         return PathSpec(
-            path=Path(self.host).expanduser(),
-            volume_mapping=Path(self.container),
+            path=Path(self.host.replace("{home}", str(home))).expanduser(),
+            volume_mapping=Path(container),
             type=self.type,
             optional=self.optional,
             readonly=self.readonly,
@@ -175,6 +197,9 @@ class RunConfig:
     memory: str | None = None
     cpus: str | None = None
     mounts: List[MountConfig] = field(default_factory=list)
+    # Built-in and user-defined agent config mounts ([agents.<name>] mounts = [...]) and the [run] agents selection.
+    agent_mounts: dict[str, List[MountConfig]] = field(default_factory=dict)
+    agents: list[str] | None = None
     # Raw per-backend tables (e.g. [firecracker]) handed to the matching plugin untouched.
     backend_options: dict[str, dict] = field(default_factory=dict)
 
@@ -192,20 +217,13 @@ class RunConfig:
         run = data.get("run", {})
         raw_mounts = run.get("mounts", [])
 
-        mounts: List[MountConfig] = []
-        for m in raw_mounts:
-            if "host" not in m or "container" not in m:
-                logger.error("Each [[run.mounts]] entry must have 'host' and 'container' keys")
-                sys.exit(1)
-            mounts.append(MountConfig(
-                host=m["host"],
-                container=m["container"],
-                type=m.get("type", "folder"),
-                optional=m.get("optional", False),
-                readonly=m.get("readonly", False),
-            ))
+        mounts = [MountConfig.parse(m, "[[run.mounts]]") for m in raw_mounts]
+        agent_mounts = {
+            name: [MountConfig.parse(m, f"[agents.{name}] mounts") for m in table.get("mounts", [])]
+            for name, table in data.get("agents", {}).items()
+        }
 
-        reserved = {"build", "versions", "run"}
+        reserved = {"build", "versions", "run", "agents"}
         backend_options = {k: v for k, v in data.items() if k not in reserved and isinstance(v, dict)}
 
         return cls(
@@ -213,6 +231,8 @@ class RunConfig:
             memory=run.get("memory"),
             cpus=run.get("cpus"),
             mounts=mounts,
+            agent_mounts=agent_mounts,
+            agents=list(run["agents"]) if "agents" in run else None,
             backend_options=backend_options,
         )
 
@@ -221,6 +241,7 @@ class RunConfig:
 
         Scalar fields (backend, memory, cpus): local wins if set, otherwise fall back to global.
         Mounts: global mounts first, then local mounts (both are applied).
+        Agent mounts: merged per agent, the local list replaces the global one; agents follows the scalar rule.
         Backend option tables: merged per backend, local keys win.
         """
         options = {name: {**opts} for name, opts in self.backend_options.items()}
@@ -232,19 +253,32 @@ class RunConfig:
             memory=local.memory if local.memory is not None else self.memory,
             cpus=local.cpus if local.cpus is not None else self.cpus,
             mounts=self.mounts + local.mounts,
+            agent_mounts={**self.agent_mounts, **local.agent_mounts},
+            agents=local.agents if local.agents is not None else self.agents,
             backend_options=options,
         )
 
     @classmethod
     def load_effective(cls, local_path: Path, global_path: Path = GLOBAL_CONFIG_PATH) -> "RunConfig":
-        """Load and merge global and local configs. Local file wins for scalars; mounts are combined."""
-        global_cfg = cls.load(global_path)
+        """Load and merge bundled defaults, global and local configs. Local file wins for scalars; mounts are combined."""
+        global_cfg = cls.load(DEFAULTS_PATH).merge(cls.load(global_path))
         local_cfg = cls.load(local_path)
         effective = global_cfg.merge(local_cfg)
         if global_cfg.mounts or global_cfg.memory or global_cfg.cpus:
             logger.debug("Global run config loaded from: %s", global_path)
         logger.debug("Effective run config: %s", effective)
         return effective
+
+
+    def selected_agent_mounts(self) -> List[MountConfig]:
+        """Mounts of the selected agents (all declared agents unless [run] agents says otherwise), in declaration order."""
+        names = list(self.agent_mounts) if self.agents is None else self.agents
+        unknown = [n for n in names if n not in self.agent_mounts]
+        if unknown:
+            logger.error("Unknown agent(s) in [run] agents: %s", ", ".join(unknown))
+            logger.error("Declared agents: %s", ", ".join(self.agent_mounts))
+            sys.exit(1)
+        return [m for name in names for m in self.agent_mounts[name]]
 
 
 @dataclass
@@ -264,6 +298,7 @@ class RunParameters:
     memory: str = "1g"
     cpus: str = "2"
     root: bool = False
+    agent_mounts: List[MountConfig] = field(default_factory=list)
     extra_mounts: List[MountConfig] = field(default_factory=list)
     command: List[str] = field(default_factory=list)
 
@@ -297,6 +332,7 @@ class RunParameters:
             memory=memory,
             cpus=cpus,
             root=args.root,
+            agent_mounts=run_config.selected_agent_mounts() if run_config is not None else [],
             extra_mounts=run_config.mounts if run_config is not None else [],
             command=list(getattr(args, "run_command", [])),
         )

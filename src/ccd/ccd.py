@@ -9,7 +9,6 @@ from ccd.config import (
     CONFIG_FILE_NAME,
     CONTAINER_NAME_BASE,
     DEFAULT_BACKEND,
-    IMAGE_HOME_FOLDER,
     IMAGE_NAME,
     VERSION_BUILD_ARGS,
     BuildConfig,
@@ -110,6 +109,12 @@ class VolumeManager:
         return mounts
 
 
+def unique_by_container(specs: List[PathSpec]) -> List[PathSpec]:
+    """A later mount of the same guest path replaces the earlier one (keeping its position)."""
+    by_container = {spec.volume_mapping: spec for spec in specs}
+    return list(by_container.values())
+
+
 def get_container_base_name():
     """Get the base name for containers"""
     # {base}-{folder}-{number}
@@ -181,23 +186,9 @@ def run_container(backend: Backend, params: RunParameters, backend_options: dict
     logger.debug("App folder resolved to: %s", app_path)
     logger.debug("Home folder resolved to: %s", home_path)
 
-    docker_home = Path(IMAGE_HOME_FOLDER)
-
     path_specs = [
         PathSpec(path=app_path, volume_mapping=Path("/app")),
-        # Claude-Code config
-        PathSpec(path=home_path / ".claude", volume_mapping=docker_home / ".claude"),
-        PathSpec(path=home_path / ".claude.json", volume_mapping=docker_home / ".claude.json", type="file"),
-        # Gemini config
-        PathSpec(path=home_path / ".gemini", volume_mapping=docker_home / ".gemini"),
-        # Codex config
-        PathSpec(path=home_path / ".codex", volume_mapping=docker_home / ".codex"),
-        # Copilot config
-        PathSpec(path=home_path / ".copilot", volume_mapping=docker_home / ".copilot"),
-        # Pi config
-        PathSpec(path=home_path / ".pi", volume_mapping=docker_home / ".pi"),
-        # Extra mounts from ccd.toml [run] section
-        *[m.to_path_spec() for m in params.extra_mounts],
+        *unique_by_container([m.to_path_spec(home_path) for m in [*params.agent_mounts, *params.extra_mounts]]),
     ]
 
     volume_manager = VolumeManager(path_specs)

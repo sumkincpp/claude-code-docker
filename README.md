@@ -453,17 +453,27 @@ optional  = true
 
 ### Volume Mounts
 
-The following host paths are always mounted into the container:
+The app folder is always mounted at /app (the container working directory). Everything else is declared in TOML.
 
-- `{app_folder}` → `/app` (container working directory)
-- `{home_folder}/.claude` → `/home/user/.claude`
-- `{home_folder}/.claude.json` → `/home/user/.claude.json`
-- `{home_folder}/.gemini` → `/home/user/.gemini`
-- `{home_folder}/.codex` → `/home/user/.codex`
-- `{home_folder}/.copilot` → `/home/user/.copilot`
-- `{home_folder}/.pi` → `/home/user/.pi`
+The agent config folders come from the bundled defaults.toml, one [agents.name] table per agent:
 
-Additional mounts can be added via `[[run.mounts]]` in `ccd.toml` (see above).
+- {home_folder}/.claude and .claude.json → /home/user/.claude and /home/user/.claude.json
+- {home_folder}/.gemini, .codex, .copilot, .pi → the same names under /home/user
+
+In host, {home} is the --home folder. In container, a leading ~/ is the image user's home. Override or extend them in ccd.toml:
+
+```toml
+[run]
+agents = ["claude", "codex"]   # mount only these (default: every declared agent)
+
+[agents.claude]                # replaces the built-in mounts of this agent
+mounts = [{ host = "~/.claude", container = "~/.claude" }]
+
+[agents.myagent]               # a new agent
+mounts = [{ host = "{home}/.myagent", container = "~/.myagent" }]
+```
+
+Additional mounts can be added via [[run.mounts]] (see above). A mount with the same container path as an earlier one replaces it.
 
 The `--home` directory is expected to contain the assistant config folders shown above.
 

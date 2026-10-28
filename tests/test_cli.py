@@ -785,3 +785,104 @@ def test_gvisor_backends_are_not_ready_on_a_host_with_16k_pages(monkeypatch):
     for backend in (gvisor.GVisorDockerBackend, gvisor.GVisorPodmanBackend):
         with pytest.raises(BackendError, match="4096-byte pages, this one has 16384"):
             backend().check_available()
+
+
+def _mounts(calls):
+    return {(str(m.host), str(m.container)): m for m in calls[0][2].mounts}
+
+
+def test_default_agent_mounts_come_from_the_bundled_defaults(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+    home = tmp_path / "h"
+
+    code, calls = ccd("run", "app", "--home", str(home), "--backend", "fake")
+
+    assert code == 0
+    containers = sorted(c for _, c in _mounts(calls))
+    assert containers == sorted(["/app"] + [f"/home/user/{n}" for n in (".claude", ".claude.json", ".gemini", ".codex", ".copilot", ".pi")])
+    assert (home / ".claude.json").is_file()
+
+
+def test_agents_selection_mounts_and_creates_only_those(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+    home = tmp_path / "h"
+
+    code, calls = ccd("run", "app", "--home", str(home), "--backend", "fake", toml='[run]\nagents = ["codex"]\n')
+
+    assert code == 0
+    assert sorted(c for _, c in _mounts(calls)) == ["/app", "/home/user/.codex"]
+    assert (home / ".codex").is_dir() and not (home / ".claude").exists()
+
+
+def test_unknown_agent_selection_fails(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml='[run]\nagents = ["nope"]\n')
+
+    assert code != 0 and not calls
+
+
+def test_agent_override_replaces_defaults_and_new_agents_can_be_defined(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+    real = tmp_path / "real-claude"
+    real.mkdir()
+    toml = f"""
+[run]
+agents = ["claude", "mine"]
+[agents.claude]
+mounts = [{{ host = "{real}", container = "~/.claude", readonly = true }}]
+[agents.mine]
+mounts = [{{ host = "{{home}}/.mine", container = "~/.mine" }}]
+"""
+    home = tmp_path / "h"
+
+    code, calls = ccd("run", "app", "--home", str(home), "--backend", "fake", toml=toml)
+
+    assert code == 0
+    mounts = _mounts(calls)
+    assert sorted(c for _, c in mounts) == ["/app", "/home/user/.claude", "/home/user/.mine"]
+    assert mounts[(str(real.resolve()), "/home/user/.claude")].readonly
+    assert (home / ".mine").is_dir()
+
+
+def test_run_mount_with_the_same_container_path_replaces_an_agent_mount(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    toml = f'[[run.mounts]]\nhost = "{other}"\ncontainer = "/home/user/.gemini"\n'
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml=toml)
+
+    assert code == 0
+    gemini = [h for h, c in _mounts(calls) if c == "/home/user/.gemini"]
+    assert gemini == [str(other.resolve())]
+
+
+def test_invalid_mount_type_and_missing_keys_fail(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+    for toml in ('[[run.mounts]]\nhost = "/x"\ncontainer = "/y"\ntype = "dir"\n', '[[run.mounts]]\nhost = "/x"\n'):
+        code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml=toml)
+        assert code != 0 and not calls
+
+
+def test_optional_missing_mount_is_skipped_and_required_folder_is_created(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+    optional = tmp_path / "optional"
+    required = tmp_path / "required"
+    toml = (
+        f'[[run.mounts]]\nhost = "{optional}"\ncontainer = "/opt"\noptional = true\n'
+        f'[[run.mounts]]\nhost = "{required}"\ncontainer = "/req"\n'
+    )
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml=toml)
+
+    assert code == 0
+    containers = {c for _, c in _mounts(calls)}
+    assert "/opt" not in containers and "/req" in containers
+    assert required.is_dir() and not optional.exists()
+
+
+def test_declared_agents_are_known_build_features():
+    from ccd.config import DEFAULTS_PATH, FEATURE_BUILD_ARGS, RunConfig
+
+    assert set(RunConfig.load(DEFAULTS_PATH).agent_mounts) <= set(FEATURE_BUILD_ARGS)
