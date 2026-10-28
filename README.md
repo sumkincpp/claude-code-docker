@@ -449,25 +449,22 @@ optional  = true
 
 The app folder is always mounted at /app (the container working directory). Everything else is declared in TOML.
 
-The agent config folders come from the bundled defaults.toml, one [agents.name] table per agent:
+Features declare the config folders they keep on the host, see the [features guide](docs/features.md). The bundled agents declare:
 
 - {home_folder}/.claude and .claude.json → /home/user/.claude and /home/user/.claude.json
 - {home_folder}/.gemini, .codex, .copilot, .pi → the same names under /home/user
 
-In host, {home} is the --home folder. In container, a leading ~/ is the image user's home. Override or extend them in ccd.toml:
+In host, {home} is the --home folder. In container, a leading ~/ is the image user's home. Override them in ccd.toml:
 
 ```toml
 [run]
-agents = ["claude", "codex"]   # mount only these (default: every declared agent)
+features = ["claude", "codex"]   # mount only these (default: every feature that declares mounts)
 
-[agents.claude]                # replaces the built-in mounts of this agent
+[features.claude]                # replaces the mounts of this feature
 mounts = [{ host = "~/.claude", container = "~/.claude" }]
-
-[agents.myagent]               # a new agent
-mounts = [{ host = "{home}/.myagent", container = "~/.myagent" }]
 ```
 
-Additional mounts can be added via [[run.mounts]] (see above). A mount with the same container path as an earlier one replaces it.
+A feature you add under .ccd/features can declare its own mounts the same way. Additional mounts can be added via [[run.mounts]] (see above). A mount with the same container path as an earlier one replaces it.
 
 The `--home` directory is expected to contain the assistant config folders shown above.
 

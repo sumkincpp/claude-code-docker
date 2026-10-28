@@ -8,3 +8,12 @@ command = "ccd-npm-install claude @anthropic-ai/claude-code --binary claude --ve
 
 [verify]
 command = "claude --version"
+
+[[mounts]]
+host = "{home}/.claude"
+container = "~/.claude"
+
+[[mounts]]
+host = "{home}/.claude.json"
+container = "~/.claude.json"
+type = "file"

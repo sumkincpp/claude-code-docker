@@ -6,3 +6,7 @@ command = "ccd-npm-install copilot @github/copilot --binary copilot --version \"
 
 [verify]
 command = "copilot --version"
+
+[[mounts]]
+host = "{home}/.copilot"
+container = "~/.copilot"

@@ -59,6 +59,22 @@ def test_invalid_manifests_are_rejected(tmp_path, toml, message):
         load(tmp_path)
 
 
+def test_bundled_agents_declare_their_config_mounts():
+    features = load_features([(BUNDLED_DIR, "bundled")])
+
+    mounts = {n: [(m.host, m.container, m.type) for m in f.mounts] for n, f in features.items() if f.mounts}
+
+    assert mounts["claude"] == [("{home}/.claude", "~/.claude", "folder"), ("{home}/.claude.json", "~/.claude.json", "file")]
+    assert set(mounts) == {"claude", "codex", "copilot", "gemini", "pi"}
+
+
+def test_invalid_mounts_in_a_manifest_are_rejected(tmp_path):
+    write(tmp_path, "thing", '[install]\ncommand = "x"\n[[mounts]]\nhost = "/a"\n')
+
+    with pytest.raises(FeatureError, match="must have 'host' and 'container'"):
+        load(tmp_path)
+
+
 def test_dependency_cycles_and_duplicate_versions_are_rejected(tmp_path):
     write(tmp_path, "a", 'requires = ["b"]\n[install]\ncommand = "x"\n')
     write(tmp_path, "b", 'requires = ["a"]\n[install]\ncommand = "x"\n')

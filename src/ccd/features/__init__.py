@@ -10,14 +10,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from ccd.config import _load_toml
+from ccd.config import MountConfig, _load_toml
 
 logger = logging.getLogger(__name__)
 
 BUNDLED_DIR = Path(__file__).parent / "bundled"
 MANIFEST_NAME = "feature.toml"
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
-TOP_LEVEL_KEYS = {"name", "description", "default", "order", "requires", "provides", "version", "versions", "install", "verify", "env", "args", "cache"}
+TOP_LEVEL_KEYS = {"name", "description", "default", "order", "requires", "provides", "version", "versions", "install", "verify", "env", "args", "cache", "mounts"}
 INSTALL_KEYS = {"command", "user"}
 
 
@@ -46,6 +46,7 @@ class Feature:
     env: dict[str, str] = field(default_factory=dict)
     args: dict[str, str] = field(default_factory=dict)
     caches: tuple[Cache, ...] = ()
+    mounts: tuple[MountConfig, ...] = ()  # config the feature keeps on the host, see {home} and ~/ in MountConfig.to_path_spec
     assets: Path | None = None
     source: str = "bundled"
 
@@ -111,6 +112,11 @@ def parse_feature(data: dict, directory: Path, source: str) -> Feature:
             raise FeatureError(f"{where}: each [[cache]] needs exactly 'id' and 'target'")
         caches.append(Cache(id=str(entry["id"]), target=str(entry["target"])))
 
+    try:
+        mounts = tuple(MountConfig.parse(m, f"{where}: [[mounts]]") for m in data.get("mounts", []))
+    except ValueError as e:
+        raise FeatureError(str(e)) from e
+
     assets = directory / "assets"
     return Feature(
         name=name,
@@ -126,6 +132,7 @@ def parse_feature(data: dict, directory: Path, source: str) -> Feature:
         env=_string_table(data.get("env", {}), f"{where}: [env]"),
         args=_string_table(data.get("args", {}), f"{where}: [args]"),
         caches=tuple(caches),
+        mounts=mounts,
         assets=assets if assets.is_dir() else None,
         source=source,
     )

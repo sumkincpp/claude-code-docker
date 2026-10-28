@@ -6,3 +6,7 @@ command = "ccd-npm-install pi @earendil-works/pi-coding-agent --binary pi --vers
 
 [verify]
 command = "pi --version"
+
+[[mounts]]
+host = "{home}/.pi"
+container = "~/.pi"

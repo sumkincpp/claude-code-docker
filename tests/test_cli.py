@@ -792,7 +792,7 @@ def _mounts(calls):
     return {(str(m.host), str(m.container)): m for m in calls[0][2].mounts}
 
 
-def test_default_agent_mounts_come_from_the_bundled_defaults(ccd, tmp_path):
+def test_default_mounts_come_from_the_feature_manifests(ccd, tmp_path):
     (tmp_path / "app").mkdir()
     home = tmp_path / "h"
 
@@ -804,36 +804,37 @@ def test_default_agent_mounts_come_from_the_bundled_defaults(ccd, tmp_path):
     assert (home / ".claude.json").is_file()
 
 
-def test_agents_selection_mounts_and_creates_only_those(ccd, tmp_path):
+def test_features_selection_mounts_and_creates_only_those(ccd, tmp_path):
     (tmp_path / "app").mkdir()
     home = tmp_path / "h"
 
-    code, calls = ccd("run", "app", "--home", str(home), "--backend", "fake", toml='[run]\nagents = ["codex"]\n')
+    code, calls = ccd("run", "app", "--home", str(home), "--backend", "fake", toml='[run]\nfeatures = ["codex"]\n')
 
     assert code == 0
     assert sorted(c for _, c in _mounts(calls)) == ["/app", "/home/user/.codex"]
     assert (home / ".codex").is_dir() and not (home / ".claude").exists()
 
 
-def test_unknown_agent_selection_fails(ccd, tmp_path):
+def test_unknown_feature_selection_fails(ccd, tmp_path):
     (tmp_path / "app").mkdir()
 
-    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml='[run]\nagents = ["nope"]\n')
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml='[run]\nfeatures = ["nope"]\n')
 
     assert code != 0 and not calls
 
 
-def test_agent_override_replaces_defaults_and_new_agents_can_be_defined(ccd, tmp_path):
+def test_feature_override_replaces_its_mounts_and_project_features_bring_their_own(ccd, tmp_path):
     (tmp_path / "app").mkdir()
     real = tmp_path / "real-claude"
     real.mkdir()
+    mine = tmp_path / ".ccd" / "features" / "mine"
+    mine.mkdir(parents=True)
+    (mine / "feature.toml").write_text('version = false\n[install]\ncommand = "true"\n[[mounts]]\nhost = "{home}/.mine"\ncontainer = "~/.mine"\n')
     toml = f"""
 [run]
-agents = ["claude", "mine"]
-[agents.claude]
+features = ["claude", "mine"]
+[features.claude]
 mounts = [{{ host = "{real}", container = "~/.claude", readonly = true }}]
-[agents.mine]
-mounts = [{{ host = "{{home}}/.mine", container = "~/.mine" }}]
 """
     home = tmp_path / "h"
 
@@ -843,10 +844,18 @@ mounts = [{{ host = "{{home}}/.mine", container = "~/.mine" }}]
     mounts = _mounts(calls)
     assert sorted(c for _, c in mounts) == ["/app", "/home/user/.claude", "/home/user/.mine"]
     assert mounts[(str(real.resolve()), "/home/user/.claude")].readonly
-    assert (home / ".mine").is_dir()
+    assert (home / ".mine").is_dir() and not (home / ".claude").exists()
 
 
-def test_run_mount_with_the_same_container_path_replaces_an_agent_mount(ccd, tmp_path):
+def test_override_of_an_unknown_feature_fails(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml='[features.ghost]\nmounts = []\n')
+
+    assert code != 0 and not calls
+
+
+def test_run_mount_with_the_same_container_path_replaces_a_feature_mount(ccd, tmp_path):
     (tmp_path / "app").mkdir()
     other = tmp_path / "other"
     other.mkdir()
@@ -881,13 +890,6 @@ def test_optional_missing_mount_is_skipped_and_required_folder_is_created(ccd, t
     containers = {c for _, c in _mounts(calls)}
     assert "/opt" not in containers and "/req" in containers
     assert required.is_dir() and not optional.exists()
-
-
-def test_declared_agents_are_known_features():
-    from ccd.config import DEFAULTS_PATH, RunConfig
-    from ccd.features import load_features
-
-    assert set(RunConfig.load(DEFAULTS_PATH).agent_mounts) <= set(load_features())
 
 
 def _build_command(ccd, *args, toml=""):

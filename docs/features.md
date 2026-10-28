@@ -52,6 +52,7 @@ Keys, all optional except the install command:
 | env | Environment variables set in the image. Values may use build args, for example `${NODE_VERSION}`. |
 | args | Build args with their defaults, see Build args. |
 | cache | Build cache mounts, see Caches. |
+| mounts | Host folders the feature keeps config in, see Mounts. |
 
 Unknown keys are an error, so typos do not pass silently.
 
@@ -109,6 +110,35 @@ The install step of every feature that requires it gets the mount automatically,
 ## Assets
 
 Files in `assets/` are copied into the image at `/usr/local/share/ccd/features/<name>/` before the install runs, and `$CCD_FEATURE_DIR` points there. The install command decides where they end up, for example copying a script into `~/.local/bin`. Changing an asset rebuilds that feature's layer.
+
+## Mounts
+
+A feature that keeps config on the host, such as an agent, declares it with `[[mounts]]`, in the same form as `[[run.mounts]]` in ccd.toml:
+
+```toml
+[[mounts]]
+host = "{home}/.claude"
+container = "~/.claude"
+
+[[mounts]]
+host = "{home}/.claude.json"
+container = "~/.claude.json"
+type = "file"
+```
+
+`{home}` is the `--home` folder on the host and a leading `~/` in `container` is the image user's home. `type` is `folder` (default) or `file`, and `optional` and `readonly` work as in ccd.toml. These folders are created under `--home` on first run.
+
+At run time the mounts of every feature that declares some are used. `ccd.toml` can narrow that and change it:
+
+```toml
+[run]
+features = ["claude", "codex"]     # only these
+
+[features.claude]                  # replace this feature's mounts
+mounts = [{ host = "~/.claude", container = "~/.claude" }]
+```
+
+Mounts follow the manifests, not what happens to be installed in the image, so build with the same selection you run with. A mount whose container path equals an earlier one replaces it, so a `[[run.mounts]]` entry can take over a feature's mount. `ccd -v` lists the features and every mount when a container starts.
 
 ## How features become a Dockerfile
 

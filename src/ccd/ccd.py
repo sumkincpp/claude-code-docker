@@ -190,7 +190,7 @@ def run_container(backend: Backend, params: RunParameters, backend_options: dict
 
     path_specs = [
         PathSpec(path=app_path, volume_mapping=Path("/app")),
-        *unique_by_container([m.to_path_spec(home_path) for m in [*params.agent_mounts, *params.extra_mounts]]),
+        *unique_by_container([m.to_path_spec(home_path) for m in [*params.feature_mounts, *params.extra_mounts]]),
     ]
 
     volume_manager = VolumeManager(path_specs)
@@ -209,7 +209,7 @@ def run_container(backend: Backend, params: RunParameters, backend_options: dict
     logger.info("  Memory limit: %s", params.memory)
     logger.info("  CPU limit: %s", params.cpus)
     logger.info("  User: %s", "root" if params.root else "user")
-    logger.info("  Agents: %s", ", ".join(params.agents) or "none")
+    logger.info("  Features: %s", ", ".join(params.features) or "none")
     logger.info("  Mounts:")
     for mount in mounts:
         logger.info("    %s -> %s%s", mount.host, mount.container, " (ro)" if mount.readonly else "")
@@ -523,7 +523,7 @@ def main() -> None:
             logger.debug("Executing run command")
             backend, backend_options = load_backend(run_backend_name(args, run_config), run_config)
             app_folder = "." if args.command == "." else None
-            params = RunParameters.from_args(IMAGE_NAME, args, run_config=run_config, app_folder=app_folder)
+            params = RunParameters.from_args(IMAGE_NAME, args, run_config=run_config, app_folder=app_folder, features=features)
             code = run_container(backend, params, backend_options)
             if code:
                 sys.exit(code)

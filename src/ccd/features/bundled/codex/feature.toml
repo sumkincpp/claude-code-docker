@@ -6,3 +6,7 @@ command = "ccd-npm-install codex @openai/codex --binary codex --version \"$CODEX
 
 [verify]
 command = "codex --version"
+
+[[mounts]]
+host = "{home}/.codex"
+container = "~/.codex"

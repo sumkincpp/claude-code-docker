@@ -6,3 +6,7 @@ command = "ccd-npm-install gemini @google/gemini-cli --binary gemini --version \
 
 [verify]
 command = "gemini --version"
+
+[[mounts]]
+host = "{home}/.gemini"
+container = "~/.gemini"
