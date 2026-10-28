@@ -961,3 +961,24 @@ def test_project_features_can_add_to_the_image(ccd, tmp_path):
     _, built = _build_command(ccd, "--with", "hello")
 
     assert "# feature: hello" in built["dockerfile"] and "echo hello" in built["dockerfile"]
+
+
+def test_features_command_lists_bundled_and_project_features(ccd, tmp_path, capsys):
+    (tmp_path / ".ccd" / "features" / "hello").mkdir(parents=True)
+    (tmp_path / ".ccd" / "features" / "hello" / "feature.toml").write_text('version = false\n[install]\ncommand = "true"\n')
+
+    code, _ = ccd("features")
+
+    rows = {line.split()[0]: line.split() for line in capsys.readouterr().out.splitlines()[1:]}
+    assert code == 0
+    assert rows["claude"][1:4] == ["yes", "pnpm", "claude=latest"] and rows["jules"][1] == "no"
+    assert rows["node"][3] == "node=24.15.0" and rows["hello"][-1] == "local"
+
+
+def test_a_broken_feature_manifest_stops_ccd_with_its_file_name(ccd, tmp_path, capsys):
+    (tmp_path / ".ccd" / "features" / "bad").mkdir(parents=True)
+    (tmp_path / ".ccd" / "features" / "bad" / "feature.toml").write_text('colour = "red"\n')
+
+    code, _ = ccd("features")
+
+    assert code == 1 and "unknown key(s): colour" in capsys.readouterr().err

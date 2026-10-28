@@ -170,6 +170,7 @@ ccd build --with claude,uv             # only these, plus what they require (nvm
 ccd build --without rust,gemini        # all defaults except these
 ccd build --claude-version 2.0.1       # a version, see Versions
 ccd build --print-dockerfile           # show the Dockerfile, build nothing
+ccd features                           # list features, what they require, their versions and where they come from
 ```
 
 The same selection works in `ccd.toml` with `with_features` or `without_features` under `[build]`. Excluding a feature that a selected one requires stops the build and names both.

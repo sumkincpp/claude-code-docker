@@ -294,6 +294,14 @@ def print_table(rows: list[tuple[str, ...]]) -> None:
         print("  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip())
 
 
+def show_features(features: dict[str, Feature]) -> None:
+    rows = [("FEATURE", "DEFAULT", "REQUIRES", "VERSIONS", "SOURCE")]
+    for feature in features.values():
+        versions = ", ".join(f"{name}={default}" for name, default in feature.versions.items())
+        rows.append((feature.name, "yes" if feature.default else "no", ", ".join(feature.requires) or "-", versions or "-", feature.source))
+    print_table(rows)
+
+
 def show_backends(run_config: RunConfig) -> None:
     rows = [("BACKEND", "CAN", "STATE")]
     for name, entry in sorted(available_backends().items()):
@@ -486,6 +494,7 @@ def main() -> None:
     add_backend_arg(attach_parser)
 
     command_parser.add_parser("backends", help="List installed backend plugins and whether they are ready")
+    command_parser.add_parser("features", help="List the features the image can be built from")
     images_parser = command_parser.add_parser("images", help="List the build data (images, rootfs, kernel) of all ready backends")
     images_parser.add_argument("--backend", default=None, help="Only list this backend")
     status_parser = command_parser.add_parser("status", help="Show the configured backends, the built image and whether the run backend's copy is current")
@@ -512,6 +521,8 @@ def main() -> None:
 
         if args.command == "backends":
             show_backends(run_config)
+        elif args.command == "features":
+            show_features(features)
         elif args.command == "images":
             show_images(run_config, args.backend)
         elif args.command == "status":
