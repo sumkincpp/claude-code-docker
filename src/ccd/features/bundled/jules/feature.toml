@@ -1,4 +1,5 @@
 description = "Google Jules CLI"
+paths = ["~/.local/share/ccd/pnpm-installs/jules", "~/.local/bin/jules", "/metadata/pnpm-cli-resolution"]
 requires = ["pnpm"]
 default = false
 

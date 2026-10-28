@@ -7,8 +7,8 @@ import { fetchRegistryData, resolveVersion } from "./resolve-version.mjs";
 
 const INSTALL_ROOT = process.env.PNPM_CLI_INSTALL_ROOT ?? path.join(os.homedir(), ".local/share/ccd/pnpm-installs");
 const METADATA_ROOT = process.env.PNPM_CLI_METADATA_ROOT ?? "/metadata";
-const SUMMARY_FILE = path.join(METADATA_ROOT, "pnpm-cli-resolution.txt");
-const JSONL_FILE = path.join(METADATA_ROOT, "pnpm-cli-resolution.jsonl");
+// One file pair per component: CLIs installed in separate build stages must not write the same file
+const RESOLUTION_DIR = path.join(METADATA_ROOT, "pnpm-cli-resolution");
 const RELEASE_AGE_DAYS = parseInt(process.env.NPM_CLI_MIN_RELEASE_AGE_DAYS ?? "7", 10);
 const RELEASE_AGE_MINUTES = RELEASE_AGE_DAYS * 24 * 60;
 const PNPM_VERSION = execSync("pnpm --version", { encoding: "utf8" }).trim();
@@ -54,7 +54,7 @@ if (isNaN(RELEASE_AGE_DAYS) || RELEASE_AGE_DAYS < 0) {
 
 fs.mkdirSync(BIN_DIR, { recursive: true });
 fs.mkdirSync(INSTALL_ROOT, { recursive: true });
-fs.mkdirSync(METADATA_ROOT, { recursive: true });
+fs.mkdirSync(RESOLUTION_DIR, { recursive: true });
 if (RELEASE_AGE_DAYS > 0) {
   console.log(`Applying release-age policy: ${RELEASE_AGE_DAYS} days (${RELEASE_AGE_MINUTES} minutes) via pnpm minimumReleaseAge`);
 } else {
@@ -134,13 +134,13 @@ function buildWorkspaceYaml(releaseAgeMinutes, ignoreCves, allowedBuilds = [], d
   return lines.join("\n") + "\n";
 }
 
-function appendSummary(text) {
-  fs.appendFileSync(SUMMARY_FILE, text);
+function appendSummary(component, text) {
+  fs.appendFileSync(path.join(RESOLUTION_DIR, `${component}.txt`), text);
   process.stdout.write(text);
 }
 
 function appendJsonl(record) {
-  fs.appendFileSync(JSONL_FILE, JSON.stringify(record) + "\n");
+  fs.appendFileSync(path.join(RESOLUTION_DIR, `${record.component}.jsonl`), JSON.stringify(record) + "\n");
 }
 
 function run(cmd, cwd) {
@@ -246,6 +246,7 @@ async function installCli({ component, package: packageName, version: versionSpe
   }
 
   appendSummary(
+    component,
     `Installing ${component}:\n` +
     `  requested: ${packageName}@${versionSpec}\n` +
     `  latest: ${latestVersion}${latestPublishTime ? ` (published ${latestPublishTime})` : ""}\n` +
@@ -289,6 +290,7 @@ async function installCli({ component, package: packageName, version: versionSpe
   }
 
   appendSummary(
+    component,
     `  final installed: ${resolvedVersion}${resolvedPublishTime ? ` (published ${resolvedPublishTime})` : ""}\n` +
     `  final audit result: ${auditResult}\n\n`
   );

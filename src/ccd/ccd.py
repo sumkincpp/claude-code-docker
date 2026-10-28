@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import List
 
 from ccd.config import (
+    BUILD_MODES,
     CONFIG_FILE_NAME,
     CONTAINER_NAME_BASE,
     DEFAULT_BACKEND,
+    DEFAULT_BUILD_MODE,
     DEFAULT_TAG,
     IMAGE_NAME,
     BuildConfig,
@@ -436,7 +438,7 @@ def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: lis
     logger.info("Features: %s", ", ".join(f.name for f in selected))
 
     if args.print_dockerfile:
-        print(render_dockerfile(selected), end="")
+        print(render_dockerfile(selected, config.mode != "sequential"), end="")
         return
 
     build_name, run_name = resolve_backends(run_config, config, args.backend)
@@ -454,7 +456,7 @@ def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: lis
             hand_over_after = False
 
     with timed(f"Build ({build_name})", logger), tempfile.TemporaryDirectory(prefix="ccd-build-") as context:
-        dockerfile = stage_context(selected, Path(context))
+        dockerfile = stage_context(selected, Path(context), config.mode != "sequential")
         request = BuildRequest(image_name=IMAGE_NAME, config=config, extra_args=extra_args, options=builder_options, dockerfile=dockerfile, context=Path(context), tag=tag)
         builder.build(request)
 
@@ -496,6 +498,12 @@ def main() -> None:
         "--tag",
         default=None,
         help=f"Tag the image with this instead of {DEFAULT_TAG}; {DEFAULT_TAG} is left alone (default: [build] tag from {CONFIG_FILE_NAME})",
+    )
+    build_parser.add_argument(
+        "--mode",
+        choices=BUILD_MODES,
+        default=None,
+        help=f"parallel: one build stage per feature, independent ones are built at the same time; sequential: every feature in order in a single stage (default: [build] mode from {CONFIG_FILE_NAME}, else {DEFAULT_BUILD_MODE})",
     )
     build_parser.add_argument(
         "--with",

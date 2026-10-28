@@ -1,4 +1,5 @@
 description = "OpenAI Codex CLI"
+paths = ["~/.local/share/ccd/pnpm-installs/codex", "~/.local/bin/codex", "/metadata/pnpm-cli-resolution"]
 requires = ["pnpm"]
 
 [install]

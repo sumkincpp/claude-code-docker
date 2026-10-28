@@ -1,5 +1,6 @@
 description = "Go toolchain, installed from go.dev"
-order = 85
+paths = ["~/.local/go"]
+order = 16
 
 [env]
 PATH = "/home/user/.local/go/bin:/home/user/go/bin:${PATH}"

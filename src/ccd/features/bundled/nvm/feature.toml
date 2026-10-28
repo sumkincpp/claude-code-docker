@@ -1,4 +1,5 @@
 description = "nvm, the Node version manager"
+paths = ["~/.nvm"]
 order = 10
 
 [env]

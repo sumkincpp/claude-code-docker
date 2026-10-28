@@ -1,4 +1,5 @@
 description = "npm and pnpm, plus ccd-npm-install for installing npm packages under the release-age and audit policy"
+paths = ["~/.nvm", "~/.local/bin", "~/.cache/node"]
 requires = ["node"]
 order = 20
 

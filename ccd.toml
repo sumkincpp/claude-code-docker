@@ -3,6 +3,10 @@
 # the image hands it over automatically, e.g. docker or buildah -> firecracker.
 backend = "docker"
 
+# How the image is built: "parallel" (default) builds one stage per feature, independent ones at the same time, and copies the results
+# together at the end; "sequential" installs every feature in order in a single stage. ccd build --mode overrides it for one build.
+# mode = "parallel"
+
 # Minimum release age in days for npm packages resolved by tag (e.g. latest)
 npm_min_release_age_days = 2
 

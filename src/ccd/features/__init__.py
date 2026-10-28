@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 BUNDLED_DIR = Path(__file__).parent / "bundled"
 MANIFEST_NAME = "feature.toml"
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
-TOP_LEVEL_KEYS = {"name", "description", "default", "order", "requires", "provides", "version", "versions", "install", "verify", "env", "args", "cache", "mounts"}
+TOP_LEVEL_KEYS = {"name", "description", "default", "order", "requires", "provides", "version", "versions", "install", "verify", "paths", "env", "args", "cache", "mounts"}
 INSTALL_KEYS = {"command", "user"}
 
 
@@ -43,6 +43,7 @@ class Feature:
     install: tuple[str, ...] = ()
     user: str = "user"
     verify: tuple[str, ...] = ()
+    paths: tuple[str, ...] = ()  # what the install leaves in the image (absolute or ~/); features with paths get a build stage of their own
     env: dict[str, str] = field(default_factory=dict)
     args: dict[str, str] = field(default_factory=dict)
     caches: tuple[Cache, ...] = ()
@@ -71,6 +72,15 @@ def _commands(value: object, where: str) -> tuple[str, ...]:
     return tuple(c.strip() for c in commands)
 
 
+def _paths(value: object, where: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(p, str) and p.strip() for p in value):
+        raise FeatureError(f"{where} must be a list of paths")
+    for path in value:
+        if not (path.startswith("/") or path.startswith("~/")) or path.rstrip("/") in ("", "~") or any(c.isspace() or c in "\"'*?[" for c in path):
+            raise FeatureError(f"{where}: {path!r} must be an absolute path or start with ~/, below the root, without spaces, quotes or wildcards")
+    return tuple(dict.fromkeys(path.rstrip("/") for path in value))
+
+
 def _string_table(value: object, where: str) -> dict[str, str]:
     if not isinstance(value, dict):
         raise FeatureError(f"{where} must be a table")
@@ -96,6 +106,10 @@ def parse_feature(data: dict, directory: Path, source: str) -> Feature:
     user = install.get("user", "user")
     if user not in ("user", "root"):
         raise FeatureError(f"{where}: [install] user must be 'user' or 'root'")
+
+    paths = _paths(data.get("paths", []), f"{where}: paths")
+    if paths and user == "root":
+        raise FeatureError(f"{where}: paths cannot be combined with [install] user = 'root' (it writes system folders)")
 
     versions: dict[str, str] = {}
     main = data.get("version", "latest")
@@ -129,6 +143,7 @@ def parse_feature(data: dict, directory: Path, source: str) -> Feature:
         install=_commands(install["command"], f"{where}: [install] command"),
         user=user,
         verify=_commands(data["verify"]["command"], f"{where}: [verify] command") if "verify" in data else (),
+        paths=paths,
         env=_string_table(data.get("env", {}), f"{where}: [env]"),
         args=_string_table(data.get("args", {}), f"{where}: [args]"),
         caches=tuple(caches),
@@ -178,6 +193,11 @@ def _link(features: dict[str, Feature]) -> dict[str, Feature]:
         if missing:
             raise FeatureError(f"feature '{feature.name}' requires unknown '{missing[0]}'")
         feature.requires = tuple(dict.fromkeys(provider[r] for r in feature.requires))
+
+    for feature in features.values():
+        for dependency in feature.requires:
+            if features[dependency].paths and not feature.paths:
+                raise FeatureError(f"feature '{feature.name}' has no paths, so it installs before the features that have them, but it requires '{dependency}' which has paths")
 
     _check_acyclic(features)
     return features

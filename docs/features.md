@@ -49,6 +49,7 @@ Keys, all optional except the install command:
 | install.command | A shell command or a list of commands, chained with &&. Each must be a single line. |
 | install.user | user (default) or root, for example to run apk add. |
 | verify.command | A command or a list of them. All selected features' checks run in one step at the end of the build. |
+| paths | What the install leaves in the image (absolute or `~/` paths, files or folders). A feature with paths gets a build stage of its own, see How features become a Dockerfile. |
 | env | Environment variables set in the image. Values may use build args, for example `${NODE_VERSION}`. |
 | args | Build args with their defaults, see Build args. |
 | cache | Build cache mounts, see Caches. |
@@ -140,13 +141,37 @@ mounts = [{ host = "~/.claude", container = "~/.claude" }]
 
 Mounts follow the manifests, not what happens to be installed in the image, so build with the same selection you run with. A mount whose container path equals an earlier one replaces it, so a `[[run.mounts]]` entry can take over a feature's mount. `ccd -v` lists the features and every mount when a container starts.
 
+## Paths and stages
+
+A feature that lists `paths` is built in a stage of its own and only those paths are copied into the final image. Stages that do not depend on each other are built at the same time (BuildKit does that by itself; buildah needs `--jobs`, ccd passes 4, see `[buildah] jobs` in ccd.toml), and a feature that did not change keeps its cached install when another one does.
+
+```toml
+paths = ["~/.local/go"]
+```
+
+Rules:
+- List exactly what the install writes. A path that is missing from the list is missing from the image, and the build's final check (every feature's verify command) fails. A listed path that does not exist stops the build at the copy.
+- Be precise in shared folders: `~/.local/bin/uv`, not `~/.local/bin`, when other features write there too. Two features may list the same folder, then both are copied and the folders merge.
+- List a folder, not a symlink, when you want links kept: a link named as the source is copied as the file it points to, a link inside a copied folder stays a link.
+- A feature that changes files of what it requires lists them too (pnpm updates npm inside `~/.nvm`).
+- A feature that installs as root cannot have paths. A feature without paths installs first, in order, in the `pre` stage, exactly as before. It cannot require a feature that has paths.
+- Files keep their owner when copied. ccd copies with `--chown=user:user` so the folders it has to create are the user's too.
+
 ## How features become a Dockerfile
+
+This is the `parallel` build mode, the default. `ccd build --mode sequential` (or `mode = "sequential"` under `[build]` in ccd.toml) ignores the paths and installs every feature in order in the single `pre` stage, with the same final checks: slower, but nothing is copied, which can win on slow storage or with a builder that cannot run stages at the same time.
 
 1. Select: the default features, or exactly the ones you ask for, plus whatever they require. Excluding something a selected feature needs is an error that names both.
 2. Order: requirements first, then by `order`, then by name, so the output is the same on every run.
-3. Render: the base image part, then one block per feature, then one step that runs every verify command, then the entrypoint part.
+3. Render:
+   - `base`: the base image part.
+   - `pre`: the features without paths, one block each in order.
+   - `f-<name>`: one stage per feature with paths. With one requirement it starts from that requirement's stage (nvm, node, pnpm and the CLIs form a chain), otherwise from `pre` with the paths of everything it needs copied in.
+   - `final`: starts from `pre`, copies every feature's paths over from its stage, runs every verify command in one step, records what is installed (`/metadata/installed.jsonl`), then the entrypoint part.
 
-Each block declares its build args right before its RUN and the RUN references each of them. Docker then reuses a layer as long as its text, its args and its assets are unchanged and everything before it is too, so changing one version rebuilds only that feature and the ones after it.
+Each block declares its build args right before its RUN and the RUN references each of them. A stage does not inherit build args, so each stage declares the ones it uses. Docker then reuses a layer as long as its text, its args and its assets are unchanged and everything before it in the same stage is too, so changing one version rebuilds that feature's stage and the final stage.
+
+Copying a big tree is not free (a few hundred MB of small files take minutes on slow storage), and a changed feature is copied again together with every copy after it. That is why `order` matters: give large trees that rarely change (node, rust, go) a lower number than the tools you update often.
 
 ## Writing a feature
 

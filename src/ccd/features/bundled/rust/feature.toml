@@ -1,5 +1,6 @@
 description = "Rust toolchain, installed with rustup"
-order = 80
+paths = ["~/.cargo", "~/.rustup"]
+order = 15
 version = false
 
 [versions]
@@ -8,7 +9,7 @@ rustup = "latest"
 [install]
 command = [
     'if [ "$RUSTUP_VERSION" = latest ]; then unset RUSTUP_VERSION; fi',
-    "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
+    "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c clippy -c rustfmt",
 ]
 
 [verify]

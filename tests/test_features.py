@@ -196,3 +196,104 @@ def test_stage_context_writes_dockerfile_core_files_and_assets(tmp_path):
     assert (ctx / "core" / "ccd-entrypoint").is_file()
     assert (ctx / "features" / "pnpm" / "install-clis.mjs").is_file()
     assert (ctx / "features" / "local-claude" / "local-claude").is_file()
+
+
+def _staged(paths: str, extra: str = "") -> str:
+    return f'paths = {paths}\nversion = false\n{extra}[install]\ncommand = "true"\n'
+
+
+@pytest.mark.parametrize("paths", ['["relative/x"]', '["/"]', '["~"]', '["/a b"]', '["/a*"]', '"/x"', '[""]'])
+def test_paths_must_be_absolute_plain_paths_in_a_list(tmp_path, paths):
+    write(tmp_path, "tool", f'paths = {paths}\n[install]\ncommand = "true"\n')
+
+    with pytest.raises(FeatureError, match="paths"):
+        load(tmp_path)
+
+
+def test_paths_are_normalized_and_cannot_be_combined_with_root_installs(tmp_path):
+    write(tmp_path, "tool", 'paths = ["~/.tool/", "~/.tool", "/opt/tool"]\n[install]\ncommand = "true"\n')
+    assert load(tmp_path)["tool"].paths == ("~/.tool", "/opt/tool")
+
+    write(tmp_path, "sys", 'paths = ["/usr/x"]\n[install]\ncommand = "apk add x"\nuser = "root"\n')
+    with pytest.raises(FeatureError, match="root"):
+        load(tmp_path)
+
+
+def test_a_feature_without_paths_cannot_require_one_with_paths(tmp_path):
+    write(tmp_path, "base-tool", _staged('["~/b"]'))
+    write(tmp_path, "plain", 'requires = ["base-tool"]\n[install]\ncommand = "true"\n')
+
+    with pytest.raises(FeatureError, match="'plain' has no paths.*'base-tool'"):
+        load(tmp_path)
+
+
+def test_staged_features_build_on_their_single_requirement_and_otherwise_on_pre(tmp_path):
+    text = render(
+        tmp_path,
+        plain='version = false\n[install]\ncommand = "echo plain"\n',
+        a=_staged('["~/a"]'),
+        b=_staged('["~/b"]', 'requires = ["a"]\n'),
+        c=_staged('["~/c"]'),
+        d=_staged('["~/d"]', 'requires = ["b", "c"]\n'),
+    )
+
+    pre = text[text.index("FROM base AS pre"):text.index("# feature: a")]
+    assert "echo plain" in pre and "AS f-" not in pre
+    assert "FROM pre AS f-a" in text and "FROM f-a AS f-b" in text and "FROM pre AS f-c" in text
+    # two requirements: nothing to build on, so what they left is copied in, a before b
+    d = text[text.index("FROM pre AS f-d"):text.index("# Assemble the features")]
+    copies = [line for line in d.splitlines() if line.startswith("COPY")]
+    assert copies == [f"COPY --chown=user:user --from=f-{n} /home/user/{n} /home/user/{n}" for n in "abc"]
+
+
+def test_the_final_stage_copies_every_path_checks_and_records(tmp_path):
+    text = render(
+        tmp_path,
+        a=_staged('["~/a", "/opt/a"]', '[env]\nA_HOME = "/home/user/a"\n[verify]\ncommand = "a --version"\n'),
+        b=_staged('["~/b"]', 'requires = ["a"]\n'),
+    )
+
+    final = text[text.index("FROM pre AS final"):]
+    assert final.index('ENV A_HOME="/home/user/a"') < final.index("COPY --chown=user:user --from=f-a /home/user/a")
+    assert "COPY --chown=user:user --from=f-a /opt/a /opt/a" in final
+    assert final.index("--from=f-b") > final.index("--from=f-a")
+    assert final.index("COPY --chown") < final.index("# Verify installations") < final.index("# Record what is installed") < final.index("COPY core/ccd-entrypoint")
+
+
+def test_a_path_is_copied_from_the_feature_building_on_it_but_never_dropped_between_siblings(tmp_path):
+    text = render(
+        tmp_path,
+        a=_staged('["~/shared"]'),
+        b=_staged('["~/shared", "~/b"]', 'requires = ["a"]\n'),
+        s1=_staged('["~/bin"]'),
+        s2=_staged('["~/bin"]'),
+    )
+
+    final = text[text.index("FROM pre AS final"):]
+    assert "--from=f-a /home/user/shared" not in final and "--from=f-b /home/user/shared" in final
+    assert "--from=f-s1 /home/user/bin" in final and "--from=f-s2 /home/user/bin" in final
+
+
+def test_stages_declare_the_args_they_use_because_args_do_not_carry_over(tmp_path):
+    text = render(
+        tmp_path,
+        provider=_staged('["~/p"]', '[args]\nPOLICY = "7"\n'),
+        user=_staged('["~/u"]', 'requires = ["provider"]\n'),
+    )
+
+    user = text[text.index("FROM f-provider AS f-user"):text.index("# Assemble the features")]
+    assert user.index("ARG POLICY=7") < user.index('export POLICY="${POLICY}"')
+    assert text[text.index("FROM pre AS final"):].count("ARG POLICY=7") == 1
+
+
+def test_every_bundled_feature_declares_its_paths_and_the_default_build_chains_on_pnpm():
+    features = load_features([(BUNDLED_DIR, "bundled")])
+    assert [name for name, f in features.items() if not f.paths] == []
+
+    text = render_dockerfile(select(features))
+
+    assert "FROM f-nvm AS f-node" in text and "FROM f-node AS f-pnpm" in text and "FROM f-pnpm AS f-claude" in text
+    final = text[text.index("FROM pre AS final"):]
+    assert "--from=f-node" not in final and "--from=f-nvm" not in final  # f-pnpm holds ~/.nvm with its own changes
+    assert final.count("--from=f-pnpm /home/user/.nvm ") == 1
+    assert "/metadata/pnpm-cli-resolution" in final

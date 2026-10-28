@@ -1,4 +1,5 @@
 description = "local-claude, a wrapper that runs Claude Code against a local Ollama"
+paths = ["~/.local/bin/local-claude"]
 requires = ["claude"]
 order = 95
 version = false

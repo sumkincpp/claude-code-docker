@@ -22,6 +22,8 @@ CONFIG_FILE_NAME = "ccd.toml"
 GLOBAL_CONFIG_PATH = Path.home() / ".config" / "ccd" / "ccd.toml"
 DEFAULT_BACKEND = "docker"
 DEFAULT_TAG = "latest"
+BUILD_MODES = ("parallel", "sequential")  # one build stage per feature, or every feature in order in a single stage
+DEFAULT_BUILD_MODE = "parallel"
 TAG_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 # Exported images handed from a build backend to a different run backend
 
@@ -57,6 +59,7 @@ def _load_toml(path: Path) -> dict:
 class BuildConfig:
     backend: str | None = None
     tag: str | None = None
+    mode: str | None = None
     with_features: set[str] | None = None
     without_features: set[str] | None = None
     force: bool = False
@@ -90,6 +93,7 @@ class BuildConfig:
         return cls(
             backend=build.get("backend"),
             tag=build.get("tag"),
+            mode=build.get("mode"),
             with_features=as_set(build["with_features"]) if "with_features" in build else None,
             without_features=as_set(build["without_features"]) if "without_features" in build else None,
             npm_min_release_age_days=build.get("npm_min_release_age_days", 7),
@@ -105,6 +109,8 @@ class BuildConfig:
 
         if getattr(args, "tag", None) is not None:
             config.tag = args.tag
+        if getattr(args, "mode", None) is not None:
+            config.mode = args.mode
         if args.with_features is not None:
             config.with_features = _parse_comma_set(args.with_features)
         if args.without_features is not None:
@@ -130,6 +136,9 @@ class BuildConfig:
     def validate(self) -> None:
         if self.with_features is not None and self.without_features is not None:
             logger.error("Use only one of --with or --without")
+            sys.exit(1)
+        if self.mode is not None and self.mode not in BUILD_MODES:
+            logger.error("Invalid build mode %r (expected one of: %s)", self.mode, ", ".join(BUILD_MODES))
             sys.exit(1)
         if self.tag is not None:
             try:

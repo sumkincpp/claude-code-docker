@@ -1282,3 +1282,31 @@ def test_buildah_rejects_a_bad_jobs_setting(tmp_path, monkeypatch, jobs):
 
     with pytest.raises(BackendError, match="jobs must be a whole number"):
         _buildah_build_command(tmp_path, monkeypatch, options={"jobs": jobs})
+
+
+def test_sequential_mode_builds_everything_in_one_stage(ccd, capsys):
+    ccd("build", "--print-dockerfile", "--with", "claude", toml='[run]\nbackend = "fake"\n')
+    parallel = capsys.readouterr().out
+    ccd("build", "--print-dockerfile", "--with", "claude", "--mode", "sequential", toml='[run]\nbackend = "fake"\n')
+    sequential = capsys.readouterr().out
+
+    assert "AS f-claude" in parallel and "--from=f-claude" in parallel
+    assert "AS f-" not in sequential and "--from=" not in sequential
+    assert sequential.index("# feature: nvm") < sequential.index("# feature: node") < sequential.index("# feature: pnpm") < sequential.index("# feature: claude") < sequential.index("FROM pre AS final")
+
+
+def test_build_mode_can_come_from_the_config_and_the_flag_wins(ccd, capsys):
+    toml = '[build]\nmode = "sequential"\n[run]\nbackend = "fake"\n'
+    ccd("build", "--print-dockerfile", "--with", "go", toml=toml)
+    configured = capsys.readouterr().out
+    ccd("build", "--print-dockerfile", "--with", "go", "--mode", "parallel", toml=toml)
+    flagged = capsys.readouterr().out
+
+    assert "AS f-go" not in configured and "AS f-go" in flagged
+
+
+def test_an_unknown_build_mode_is_refused(ccd, caplog):
+    code, calls = ccd("build", "--print-dockerfile", toml='[build]\nmode = "fast"\n[run]\nbackend = "fake"\n')
+
+    assert code != 0 and not calls
+    assert "Invalid build mode 'fast'" in caplog.text
