@@ -146,6 +146,7 @@ ccd build [--with feature1,feature2,...] [--without feature3,feature4,...]
 - `--with`: Comma-separated features to install, plus whatever they require (default: all default features).
 - `--without`: Comma-separated features to leave out. Leaving out something a selected feature needs is an error.
 - `--print-dockerfile`: Print the generated Dockerfile and exit, nothing is built.
+- `--tag`: Name the image `ccd:TAG` instead of `ccd:latest`; `latest` is left alone (default: `[build] tag`, else `latest`).
 
 Everything installable is a feature: `nvm`, `node`, `pnpm`, `uv`, `rust`, `claude`, `codex`, `gemini`, `copilot`,
 `opencode`, `pi`, `local-claude`, and `jules` (off by default). You can add your own under `.ccd/features/`, see the
@@ -213,6 +214,25 @@ Or pass build args directly:
 ccd build --uv-version 0.7.2
 ```
 
+### Image Tags (ccd tag, --tag)
+
+A new `ccd build` replaces `ccd:latest`. To keep the previous image, or to try a new build before it becomes the default, use tags:
+
+```bash
+ccd tag latest previous        # keep the current image as ccd:previous
+ccd build --tag next           # build ccd:next, latest stays as it is
+ccd run --tag next             # try it (ccd . --tag next works too)
+ccd tag next latest            # happy with it: make it the default
+ccd tag previous latest        # or roll back
+ccd images                     # lists every tag with its id, size and age
+ccd status --tag next          # the image id behind a tag
+```
+
+`[build] tag` and `[run] tag` in `ccd.toml` change the default tag, and the flag wins over them. A tag may contain letters,
+digits, `_`, `.` and `-` (at most 128 characters, not starting with `.` or `-`). Extra tags share layers, so they cost little
+disk, but removing one is manual (`docker rmi ccd:next`). `ccd tag` works on docker, podman, gvisor and buildah; firecracker
+keeps a single image and accepts only `latest`.
+
 ### Run Container (ccd run / ccd .)
 
 ```bash
@@ -223,6 +243,7 @@ ccd run [app_folder] [--home home_folder] [--memory MEM] [--cpus N] [-v|-vv|-vvv
 - `--home`: Local directory for assistant config (default: `$HOME/.claude-code-docker`).
 - `--memory`: Memory limit (default: `1g`; overrides `ccd.toml`).
 - `--cpus`: CPU limit (default: `2`; overrides `ccd.toml`).
+- `--tag`: Image tag to run (default: `[run] tag`, else `latest`).
 - `-v/-vv/-vvv`: Verbosity levels (warning/info/debug/verbose-debug).
 - Alias: `ccd .` is the same as `ccd run .`.
 
@@ -374,6 +395,9 @@ Controls `ccd build` behaviour.
 
 ```toml
 [build]
+# Tag of the image ccd build creates (CLI flag --tag overrides it; default: latest)
+# tag = "latest"
+
 # Features to include (mutually exclusive with without_features)
 with_features = ["claude", "codex", "copilot", "rust"]
 # without_features = ["jules", "opencode"]
@@ -398,6 +422,9 @@ Controls `ccd run` / `ccd .` behaviour.
 
 ```toml
 [run]
+# Image tag to run (CLI flag --tag overrides it; default: latest)
+# tag = "latest"
+
 # Resource limits (CLI flags --memory / --cpus override these)
 memory = "4g"
 cpus   = "4"
