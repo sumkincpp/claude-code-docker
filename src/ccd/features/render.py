@@ -1,5 +1,7 @@
 """Render a selection of features as a Dockerfile plus the build context it needs."""
 
+import json
+import shlex
 import shutil
 from pathlib import Path
 from typing import Sequence
@@ -10,6 +12,7 @@ from ccd.features import Cache, Feature, version_variable
 CORE_DIR = Path(__file__).parent / "core"
 FEATURES_IN_IMAGE = "/usr/local/share/ccd/features"
 IMAGE_USER_ID = 1000
+INSTALLED_FILE = "/metadata/installed.jsonl"
 
 
 def _expand(path: str) -> str:
@@ -85,6 +88,19 @@ def render_feature(feature: Feature, selected: Sequence[Feature], declared: set[
     return "\n".join(lines)
 
 
+def _record(feature: Feature) -> str:
+    """Shell command appending one JSON line about the feature to the installed list.
+
+    What the manifest says is written as is; the first line of the check output (stdout, so warnings do not end up as the version) is only known at build time, so the
+    shell fills it in. It is the resolved version, for example "go version go1.24.0 linux/arm64".
+    """
+    known = {"name": feature.name, "description": feature.description, "source": feature.source, "install": list(feature.install)}
+    head = json.dumps(known)[:-1] + ',"resolved":"'
+    escape = r"sed 's/[\\\"]/\\&/g'"
+    resolved = f"$({feature.verify[0]} 2>/dev/null | head -n1 | {escape})" if feature.verify else ""
+    return f"printf '%s%s\"}}\\n' {shlex.quote(head)} \"{resolved}\" >> {INSTALLED_FILE}"
+
+
 def render_dockerfile(selected: Sequence[Feature]) -> str:
     """Core head, one block per feature in the given (install) order, a final check of everything, core tail."""
     declared: set[str] = set()
@@ -93,6 +109,8 @@ def render_dockerfile(selected: Sequence[Feature]) -> str:
     verify = [command for feature in selected for command in feature.verify]
     if verify:
         parts.append("# Verify installations\n" + _run(verify))
+    if selected:
+        parts.append("# Record what is installed\n" + _run([f": > {INSTALLED_FILE}", *(_record(f) for f in selected)]))
     parts.append((CORE_DIR / "tail.Dockerfile").read_text().rstrip())
     return "\n\n".join(parts) + "\n"
 

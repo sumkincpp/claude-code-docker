@@ -136,7 +136,16 @@ def test_render_declares_each_arg_right_before_the_run_that_references_it(tmp_pa
     block = text[text.index("# feature: tool"):text.index("# feature: zother")]
     assert block.splitlines()[1] == "ARG TOOL_VERSION=latest"
     assert 'export TOOL_VERSION="${TOOL_VERSION}" && \\\n    echo $TOOL_VERSION && \\\n    echo done' in block
-    assert "TOOL_VERSION" not in text[text.index("# feature: zother"):]
+    assert "TOOL_VERSION" not in text[text.index("# feature: zother"):text.index("# Record what is installed")]
+
+
+def test_render_records_every_feature_in_the_installed_list(tmp_path):
+    text = render(tmp_path, tool='version = false\n[install]\ncommand = "echo 100%"\n[verify]\ncommand = "tool --version"\n')
+
+    record = text[text.index("# Record what is installed"):]
+    assert ": > /metadata/installed.jsonl" in record
+    assert '"name": "tool"' in record and "echo 100%" in record
+    assert '"$(tool --version 2>/dev/null | head -n1 |' in record
 
 
 def test_render_orders_args_env_copy_and_run_and_declares_shared_args_once(tmp_path):
