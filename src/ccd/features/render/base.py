@@ -1,6 +1,7 @@
 """The contract of a renderer: what the kernel asks of anything that turns the selected features into build input."""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
@@ -9,6 +10,13 @@ from ccd.features import Feature
 
 class RendererError(ValueError):
     """An unknown renderer was asked for."""
+
+
+@dataclass(frozen=True)
+class RenderOptions:
+    """What the user asked for independently of the layout a renderer chooses."""
+
+    flatten: bool = False  # the image ends up as a single layer
 
 
 class Renderer(ABC):
@@ -20,6 +28,9 @@ class Renderer(ABC):
 
     name: str
     description: str
+
+    def __init__(self, options: RenderOptions | None = None) -> None:
+        self.options = options or RenderOptions()
 
     @abstractmethod
     def render(self, selected: Sequence[Feature]) -> str:

@@ -21,7 +21,7 @@ from ccd.config import (
     validate_tag,
 )
 from ccd.features import Feature, FeatureError, known_versions, load_features, select
-from ccd.features.render import DEFAULT_RENDERER, INSTALLED_FILE, RendererError, available_renderers, get_renderer
+from ccd.features.render import DEFAULT_RENDERER, INSTALLED_FILE, RenderOptions, RendererError, available_renderers, get_renderer
 from ccd.plugin import (
     AttachRequest,
     Backend,
@@ -436,7 +436,7 @@ def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: lis
     logger.info("Features: %s", ", ".join(f.name for f in selected))
 
     try:
-        renderer = get_renderer(config.mode)
+        renderer = get_renderer(config.mode, RenderOptions(flatten=config.flatten))
     except RendererError as e:
         raise BackendError(str(e)) from e
 
@@ -508,6 +508,11 @@ def main() -> None:
         choices=sorted(renderers),
         default=None,
         help="; ".join(f"{name}: {renderer.description}" for name, renderer in sorted(renderers.items())) + f" (default: [build] mode from {CONFIG_FILE_NAME}, else {DEFAULT_RENDERER})",
+    )
+    build_parser.add_argument(
+        "--flatten",
+        action="store_true",
+        help="Make the image a single layer: the finished image is copied into a stage that starts from scratch (a second full copy, which takes a while)",
     )
     build_parser.add_argument(
         "--with",

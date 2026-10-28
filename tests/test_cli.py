@@ -1310,3 +1310,14 @@ def test_an_unknown_build_mode_is_refused(ccd, caplog):
 
     assert code != 0 and not calls
     assert "Invalid build mode 'fast'" in caplog.text
+
+
+def test_flatten_can_come_from_the_flag_or_the_config(ccd, capsys):
+    ccd("build", "--print-dockerfile", "--with", "go", toml='[run]\nbackend = "fake"\n')
+    default = capsys.readouterr().out
+    ccd("build", "--print-dockerfile", "--with", "go", "--flatten", toml='[run]\nbackend = "fake"\n')
+    flagged = capsys.readouterr().out
+    ccd("build", "--print-dockerfile", "--with", "go", toml='[build]\nflatten = true\n[run]\nbackend = "fake"\n')
+    configured = capsys.readouterr().out
+
+    assert "AS flat" not in default and "FROM scratch AS flat" in flagged and flagged == configured

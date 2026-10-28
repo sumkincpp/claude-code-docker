@@ -7,6 +7,10 @@ backend = "docker"
 # together at the end; "sequential" installs every feature in order in a single stage. ccd build --mode overrides it for one build.
 # mode = "parallel"
 
+# Make the image a single layer: the finished image is copied into a stage that starts from scratch. That is a second full copy of
+# everything (minutes on slow storage) and it rebuilds on every change, so it is off by default. ccd build --flatten does it for one build.
+# flatten = false
+
 # Minimum release age in days for npm packages resolved by tag (e.g. latest)
 npm_min_release_age_days = 2
 

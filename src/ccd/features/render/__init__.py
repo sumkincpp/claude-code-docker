@@ -6,10 +6,10 @@ Built-in renderers are listed here; others come from the `ccd.renderers` entry-p
 from importlib import import_module
 from importlib.metadata import entry_points
 
-from ccd.features.render.base import Renderer, RendererError
+from ccd.features.render.base import RenderOptions, Renderer, RendererError
 from ccd.features.render.dialect import INSTALLED_FILE
 
-__all__ = ["DEFAULT_RENDERER", "INSTALLED_FILE", "Renderer", "RendererError", "available_renderers", "get_renderer"]
+__all__ = ["DEFAULT_RENDERER", "INSTALLED_FILE", "RenderOptions", "Renderer", "RendererError", "available_renderers", "get_renderer"]
 
 ENTRY_POINT_GROUP = "ccd.renderers"
 DEFAULT_RENDERER = "parallel"
@@ -35,12 +35,12 @@ def available_renderers() -> dict[str, Renderer]:
     return found
 
 
-def get_renderer(name: str | None = None) -> Renderer:
+def get_renderer(name: str | None = None, options: RenderOptions | None = None) -> Renderer:
     """The renderer called `name` (the default one without a name); only that one is loaded."""
     name = name or DEFAULT_RENDERER
     installed = _installed()
     if name in installed:
-        return installed[name].load()()
+        return installed[name].load()(options)
     if name in BUILTIN_RENDERERS:
-        return _builtin(BUILTIN_RENDERERS[name])()
+        return _builtin(BUILTIN_RENDERERS[name])(options)
     raise RendererError(f"Invalid build mode {name!r} (expected one of: {', '.join(sorted({*BUILTIN_RENDERERS, *installed}))})")

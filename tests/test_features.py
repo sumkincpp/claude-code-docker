@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from ccd.features import BUNDLED_DIR, FeatureError, load_features, select, version_variable
-from ccd.features.render import Renderer, RendererError, available_renderers, get_renderer
+from ccd.features.render import RenderOptions, Renderer, RendererError, available_renderers, get_renderer
 
 
 def write(root: Path, name: str, toml: str, assets: dict[str, str] | None = None) -> None:
@@ -343,3 +343,42 @@ def test_a_renderer_can_be_added_through_the_entry_point_group(monkeypatch):
     assert sorted(available_renderers()) == ["mine", "parallel", "sequential"]
     with pytest.raises(RendererError, match="mine, parallel, sequential"):
         get_renderer("fast")
+
+
+def _stages(text: str) -> dict[str, list[str]]:
+    """The lines of every stage by its name."""
+    stages: dict[str, list[str]] = {}
+    current = None
+    for line in text.splitlines():
+        if line.startswith("FROM "):
+            current = line.split(" AS ")[-1]
+            stages[current] = []
+        elif current:
+            stages[current].append(line)
+    return stages
+
+
+@pytest.mark.parametrize("mode", ["parallel", "sequential"])
+def test_the_flat_stage_is_last_copies_the_final_image_and_replays_its_config(mode):
+    selected = select(load_features([(BUNDLED_DIR, "bundled")]), with_names={"claude", "go"})
+
+    plain = get_renderer(mode).render(selected)
+    flat = get_renderer(mode, RenderOptions(flatten=True)).render(selected)
+
+    assert "FROM scratch" not in plain and flat.startswith(plain.rstrip("\n"))
+    stages = _stages(flat)
+    assert list(stages)[-1] == "flat" and stages["flat"][0] == "COPY --from=final / /"
+    # the image gets the ENVs of the head, of `pre` and of `final`; the stages of the features only through `final`
+    in_image = [line for name in ("base", "pre", "final") for line in stages[name] if line.startswith("ENV ")]
+    replayed = [line for line in stages["flat"] if line.startswith("ENV ")]
+    assert replayed[0].startswith('ENV PATH="/usr/local/sbin') and replayed[1:] == in_image
+    assert {"WORKDIR /app", "USER user", 'ENTRYPOINT ["/usr/local/bin/ccd-entrypoint"]', 'CMD ["bash"]'} <= set(stages["flat"])
+    flat_checks = "\n".join(stages["flat"][stages["flat"].index(next(line for line in stages["flat"] if line.startswith("RUN "))):])
+    assert "go version" in flat_checks and "claude --version" in flat_checks  # the checks run again on the flattened image
+
+
+def test_nothing_is_flattened_unless_asked_for():
+    selected = select(load_features([(BUNDLED_DIR, "bundled")]), with_names={"go"})
+
+    assert "AS flat" not in get_renderer().render(selected)
+    assert "AS flat" not in get_renderer("sequential", RenderOptions()).render(selected)

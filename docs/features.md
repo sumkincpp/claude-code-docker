@@ -184,7 +184,22 @@ The manifests, the selection and the order (`ccd.features`) know nothing about D
 
 Both are small subclasses of `DockerfileRenderer` (`ccd/features/render/dockerfile.py`), which writes the head, `pre`, the stages, `final` and the tail, and only ask the subclass for a `Plan`: which features install in `pre`, which further stages there are, and what `final` copies. The instructions that install one feature are shared pure functions (`ccd/features/render/dialect.py`).
 
-Another renderer, which does not have to produce a Dockerfile, is a subclass of `Renderer` (`render` and `stage_context`) published in the `ccd.renderers` entry-point group of a package:
+### One layer
+
+`ccd build --flatten` (or `flatten = true` under `[build]`) appends a last stage to the Dockerfile of either layout:
+
+```dockerfile
+FROM scratch AS flat
+COPY --from=final / /
+ENV ... WORKDIR ... USER ... ENTRYPOINT ... CMD ...   # the image config, replayed
+RUN <every feature's verify command>
+```
+
+The image then has one layer and nothing of the stages. A copy keeps files but not the image config, so ccd replays it from the same sources the other stages use (the head, the features' `env`, the tail), and runs the checks once more to show the replay is right. The base image's `PATH` is written out in `BASE_PATH` (`ccd/features/render/dockerfile.py`) because a stage from scratch has none; change it with the base image.
+
+It costs a second full copy of the whole filesystem and the stage is rebuilt after any change, which is why it is off by default. It only helps when the layers themselves matter, for example when the image is pushed to a registry; the Firecracker backend flattens the image into a rootfs anyway.
+
+Another renderer, which does not have to produce a Dockerfile, is a subclass of `Renderer` (`render` and `stage_context`; it receives `RenderOptions`, for example `flatten`) published in the `ccd.renderers` entry-point group of a package:
 
 ```toml
 [project.entry-points."ccd.renderers"]

@@ -8,9 +8,11 @@ from typing import Sequence
 
 from ccd.features import Feature, dependencies
 from ccd.features.render.base import Renderer
-from ccd.features.render.dialect import INSTALLED_FILE, heading, install_lines, record, run
+from ccd.features.render.dialect import INSTALLED_FILE, environment, heading, install_lines, record, run
 
 CORE_DIR = Path(__file__).parent.parent / "core"
+# What the base image sets before the head's own ENV lines extend it: a stage that starts from scratch has no PATH
+BASE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 @dataclass
@@ -23,7 +25,7 @@ class Plan:
 
 
 class DockerfileRenderer(Renderer):
-    """Core head, `pre`, the planned stages, `final`, core tail.
+    """Core head, `pre`, the planned stages, `final`, core tail, and with options.flatten a last stage with the image in one layer.
 
     The final stage also runs the check of everything and records what is installed, so whatever a layout loses on the
     way into the image shows up as a failing check.
@@ -35,7 +37,9 @@ class DockerfileRenderer(Renderer):
     def render(self, selected: Sequence[Feature]) -> str:
         plan = self.plan(selected)
         declared: set[str] = set()
-        parts = [(CORE_DIR / "head.Dockerfile").read_text().rstrip(), "FROM base AS pre"]
+        head = (CORE_DIR / "head.Dockerfile").read_text().rstrip()
+        tail = (CORE_DIR / "tail.Dockerfile").read_text().rstrip()
+        parts = [head, "FROM base AS pre"]
         for feature in plan.pre:
             parts.append("\n".join([heading(feature), *install_lines(feature, dependencies(feature, selected), declared)]))
         parts.extend(plan.stages)
@@ -45,8 +49,30 @@ class DockerfileRenderer(Renderer):
             parts.append("# Verify installations\n" + run(verify))
         if selected:
             parts.append("# Record what is installed\n" + run([f": > {INSTALLED_FILE}", *(record(f) for f in selected)]))
-        parts.append((CORE_DIR / "tail.Dockerfile").read_text().rstrip())
+        parts.append(tail)
+        if self.options.flatten:
+            parts.append(self.flat_stage(plan, head, tail, verify))
         return "\n\n".join(parts) + "\n"
+
+    @staticmethod
+    def flat_stage(plan: Plan, head: str, tail: str, verify: Sequence[str]) -> str:
+        """The finished image copied into a stage that starts from scratch, so it is one layer.
+
+        A copy keeps the files but not the image config, so the config is replayed: the environment of the head and of
+        the features, then the working directory, user and entrypoint of the tail. The checks run once more to show the
+        replay is right.
+        """
+        features_env = [line for line in (*environment(plan.pre, set()), *plan.assembly) if line.startswith(("ARG ", "ENV "))]
+        config = [
+            f'ENV PATH="{BASE_PATH}"',
+            *(line for line in head.splitlines() if line.startswith("ENV ")),
+            *features_env,
+            *(line for line in tail.splitlines() if line.startswith(("WORKDIR ", "USER ", "ENTRYPOINT ", "CMD "))),
+        ]
+        lines = ["# Flatten the image into one layer", "FROM scratch AS flat", "COPY --from=final / /", *config]
+        if verify:
+            lines.append(run(verify))
+        return "\n".join(lines)
 
     def stage_context(self, selected: Sequence[Feature], destination: Path) -> Path:
         """Write the Dockerfile and everything it COPYs into destination, and return the Dockerfile path."""
