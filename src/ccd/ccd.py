@@ -207,6 +207,10 @@ def run_container(backend: Backend, params: RunParameters, backend_options: dict
     logger.info("  Memory limit: %s", params.memory)
     logger.info("  CPU limit: %s", params.cpus)
     logger.info("  User: %s", "root" if params.root else "user")
+    logger.info("  Agents: %s", ", ".join(params.agents) or "none")
+    logger.info("  Mounts:")
+    for mount in mounts:
+        logger.info("    %s -> %s%s", mount.host, mount.container, " (ro)" if mount.readonly else "")
 
     return (
         backend.run(

@@ -270,15 +270,19 @@ class RunConfig:
         return effective
 
 
-    def selected_agent_mounts(self) -> List[MountConfig]:
-        """Mounts of the selected agents (all declared agents unless [run] agents says otherwise), in declaration order."""
+    def selected_agents(self) -> List[str]:
+        """Selected agents: all declared ones unless [run] agents says otherwise."""
         names = list(self.agent_mounts) if self.agents is None else self.agents
         unknown = [n for n in names if n not in self.agent_mounts]
         if unknown:
             logger.error("Unknown agent(s) in [run] agents: %s", ", ".join(unknown))
             logger.error("Declared agents: %s", ", ".join(self.agent_mounts))
             sys.exit(1)
-        return [m for name in names for m in self.agent_mounts[name]]
+        return names
+
+    def selected_agent_mounts(self) -> List[MountConfig]:
+        """Mounts of the selected agents, in declaration order."""
+        return [m for name in self.selected_agents() for m in self.agent_mounts[name]]
 
 
 @dataclass
@@ -298,6 +302,7 @@ class RunParameters:
     memory: str = "1g"
     cpus: str = "2"
     root: bool = False
+    agents: List[str] = field(default_factory=list)
     agent_mounts: List[MountConfig] = field(default_factory=list)
     extra_mounts: List[MountConfig] = field(default_factory=list)
     command: List[str] = field(default_factory=list)
@@ -332,6 +337,7 @@ class RunParameters:
             memory=memory,
             cpus=cpus,
             root=args.root,
+            agents=run_config.selected_agents() if run_config is not None else [],
             agent_mounts=run_config.selected_agent_mounts() if run_config is not None else [],
             extra_mounts=run_config.mounts if run_config is not None else [],
             command=list(getattr(args, "run_command", [])),

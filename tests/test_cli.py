@@ -886,3 +886,14 @@ def test_declared_agents_are_known_build_features():
     from ccd.config import DEFAULTS_PATH, FEATURE_BUILD_ARGS, RunConfig
 
     assert set(RunConfig.load(DEFAULTS_PATH).agent_mounts) <= set(FEATURE_BUILD_ARGS)
+
+
+def test_verbose_run_lists_agents_and_mounts(ccd, tmp_path, caplog):
+    import logging
+    (tmp_path / "app").mkdir()
+
+    with caplog.at_level(logging.INFO):
+        ccd("-v", "run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml='[run]\nagents = ["codex"]\n')
+
+    assert "Agents: codex" in caplog.text
+    assert "-> /home/user/.codex" in caplog.text and "-> /app" in caplog.text
