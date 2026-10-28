@@ -10,3 +10,6 @@ command = [
     'if [ "$RUSTUP_VERSION" = latest ]; then unset RUSTUP_VERSION; fi',
     "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
 ]
+
+[verify]
+command = "rustc --version"

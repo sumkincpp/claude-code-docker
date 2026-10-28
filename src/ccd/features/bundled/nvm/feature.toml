@@ -13,3 +13,6 @@ command = [
     'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v${NVM_VERSION}/install.sh | bash',
     'test -f /home/user/.nvm/nvm.sh',
 ]
+
+[verify]
+command = '. "$NVM_DIR/nvm.sh" && nvm --version'
