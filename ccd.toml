@@ -85,6 +85,13 @@ kernel_url  = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20261023-dd
 # subnet      = "10.111.111.0/24"
 
 # ---------------------------------------------------------------------------
+# Buildah backend options (used when backend = "buildah")
+# ---------------------------------------------------------------------------
+# [buildah]
+# Stages built at once (default 4; buildah's own default is 1, 0 = no limit). ccd build --jobs N overrides it for one build.
+# jobs = 4
+
+# ---------------------------------------------------------------------------
 # Podman backend options (used when backend = "podman")
 # ---------------------------------------------------------------------------
 # [podman]

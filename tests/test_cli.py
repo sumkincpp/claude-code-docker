@@ -1244,3 +1244,41 @@ def test_docker_reads_a_file_from_the_image_without_its_entrypoint(monkeypatch):
 
     assert DockerBackend().read_image_file("ccd", "next", "/metadata/installed.jsonl", {}) == "data"
     assert seen[0][1:5] == ["run", "--rm", "--entrypoint", "cat"] and seen[0][-2:] == ["ccd:next", "/metadata/installed.jsonl"]
+
+
+def _buildah_build_command(tmp_path, monkeypatch, options=None, extra_args=()):
+    import subprocess
+
+    from ccd.backends.buildah import BuildahBackend
+    from ccd.config import BuildConfig
+    from ccd.plugin import BuildRequest
+
+    commands = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: commands.append(cmd) or subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+    request = BuildRequest(image_name="ccd", config=BuildConfig(), extra_args=list(extra_args), options=options or {}, dockerfile=tmp_path / "Dockerfile", context=tmp_path)
+    BuildahBackend().build(request)
+    return commands[-1]
+
+
+def test_buildah_builds_four_stages_at_once_by_default(tmp_path, monkeypatch):
+    cmd = _buildah_build_command(tmp_path, monkeypatch)
+
+    assert cmd[cmd.index("--jobs") + 1] == "4"
+
+
+def test_buildah_jobs_can_be_set_in_the_config_and_on_the_command_line(tmp_path, monkeypatch):
+    configured = _buildah_build_command(tmp_path, monkeypatch, options={"jobs": 2})
+    unlimited = _buildah_build_command(tmp_path, monkeypatch, options={"jobs": 0})
+    flagged = _buildah_build_command(tmp_path, monkeypatch, options={"jobs": 2}, extra_args=["--jobs", "1"])
+
+    assert configured[configured.index("--jobs") + 1] == "2" and unlimited[unlimited.index("--jobs") + 1] == "0"
+    assert flagged.count("--jobs") == 1 and flagged[flagged.index("--jobs") + 1] == "1"
+
+
+@pytest.mark.parametrize("jobs", [-1, "4", True, 1.5])
+def test_buildah_rejects_a_bad_jobs_setting(tmp_path, monkeypatch, jobs):
+    from ccd.plugin import BackendError
+
+    with pytest.raises(BackendError, match="jobs must be a whole number"):
+        _buildah_build_command(tmp_path, monkeypatch, options={"jobs": jobs})

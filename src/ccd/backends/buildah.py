@@ -11,6 +11,8 @@ from ccd.plugin import AttachRequest, Backend, BackendError, BuildRequest, Image
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_JOBS = 4  # stages built at once; buildah itself builds one at a time unless asked
+
 NOT_A_RUNTIME = "The buildah backend only builds images; set [run] backend to a runtime (e.g. firecracker)"
 
 
@@ -24,10 +26,20 @@ class BuildahBackend(Backend):
         if shutil.which("buildah") is None:
             raise BackendError("buildah not found in PATH")
 
+    @staticmethod
+    def _jobs_args(request: BuildRequest) -> list[str]:
+        """--jobs from [buildah] jobs (0 = no limit), unless the user passed their own to ccd build."""
+        if any(a == "--jobs" or a.startswith("--jobs=") for a in request.extra_args):
+            return []
+        jobs = request.options.get("jobs", DEFAULT_JOBS)
+        if not isinstance(jobs, int) or isinstance(jobs, bool) or jobs < 0:
+            raise BackendError(f"[buildah] jobs must be a whole number, 0 for no limit (got {jobs!r})")
+        return ["--jobs", str(jobs)]
+
     def build(self, request: BuildRequest) -> None:
         # `localhost/` keeps later `buildah from` lookups from trying a registry
         dockerfile, context = build_inputs(request)
-        cmd = ["buildah", "bud", "--layers", "-t", f"localhost/{image_ref(request.image_name, request.tag)}", "-f", str(dockerfile), *to_docker_build_args(request.config, request.extra_args), str(context)]
+        cmd = ["buildah", "bud", "--layers", "-t", f"localhost/{image_ref(request.image_name, request.tag)}", "-f", str(dockerfile), *self._jobs_args(request), *to_docker_build_args(request.config, request.extra_args), str(context)]
         logger.debug("Build command: %s", cmd)
         try:
             subprocess.run(cmd, check=True)
