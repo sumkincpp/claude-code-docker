@@ -305,6 +305,20 @@ def print_table(rows: list[tuple[str, ...]]) -> None:
         print("  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip())
 
 
+def import_into_runner(run_config: RunConfig, builder: Backend, builder_options: dict, build_name: str, run_name: str, config: BuildConfig, tag: str) -> None:
+    """Hand the image tagged `tag` from its builder to the (different) run backend."""
+    runner, runner_options = load_backend(run_name, run_config)
+    logger.info("Handing image from '%s' to '%s'", build_name, run_name)
+    with timed(f"Import ({run_name})", logger):
+        fmt = hand_over(
+            builder,
+            runner,
+            BuildRequest(image_name=IMAGE_NAME, config=config, options=builder_options, tag=tag),
+            BuildRequest(image_name=IMAGE_NAME, config=config, options=runner_options, tag=tag),
+        )
+    logger.info("Handed over as '%s'", fmt)
+
+
 def tag_image(run_config: RunConfig, source: str, target: str, build_override: str | None = None) -> None:
     """Add the tag `target` to the image tagged `source` on the build backend (promote a build, or keep a backup)."""
     for tag in (source, target):
@@ -312,12 +326,16 @@ def tag_image(run_config: RunConfig, source: str, target: str, build_override: s
             validate_tag(tag)
         except ValueError as e:
             raise BackendError(str(e)) from e
-    build_name, _ = resolve_backends(run_config, BuildConfig.load(Path(CONFIG_FILE_NAME)), build_override)
+    config = BuildConfig.load(Path(CONFIG_FILE_NAME))
+    build_name, run_name = resolve_backends(run_config, config, build_override)
     backend, options = load_backend(build_name, run_config)
     require_tag_support(backend, source)
     require_tag_support(backend, target)
     backend.tag_image(IMAGE_NAME, source, target, options)
     print(f"Tagged {image_ref(IMAGE_NAME, source)} as {image_ref(IMAGE_NAME, target)} in {build_name}")
+    # The run backend only ever sees the default tag, so moving it is what hands the image over
+    if target == DEFAULT_TAG and build_name != run_name:
+        import_into_runner(run_config, backend, options, build_name, run_name, config, DEFAULT_TAG)
 
 
 def show_features(features: dict[str, Feature]) -> None:
@@ -405,30 +423,22 @@ def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: lis
     tag = config.tag or DEFAULT_TAG
     builder, builder_options = load_backend(build_name, run_config)
     require_tag_support(builder, tag)
-    runner = None
-    if build_name != run_name and tag != DEFAULT_TAG:
-        runner, runner_options = load_backend(run_name, run_config)  # fail before building, not after
-        require_tag_support(runner, tag)
+    hand_over_after = build_name != run_name
+    if hand_over_after and tag != DEFAULT_TAG:
+        # The run backend only runs the default tag: a tagged build stays with the builder until it is promoted
+        runner, _, why = try_backend(run_name, run_config)
+        if runner is None or not runner.supports_tags:
+            reason = why if runner is None else f"it only runs '{DEFAULT_TAG}'"
+            logger.warning("Not importing %s into %s (%s); 'ccd tag %s %s' imports it later", image_ref(IMAGE_NAME, tag), run_name, reason, tag, DEFAULT_TAG)
+            hand_over_after = False
 
     with timed(f"Build ({build_name})", logger), tempfile.TemporaryDirectory(prefix="ccd-build-") as context:
         dockerfile = stage_context(selected, Path(context))
         request = BuildRequest(image_name=IMAGE_NAME, config=config, extra_args=extra_args, options=builder_options, dockerfile=dockerfile, context=Path(context), tag=tag)
         builder.build(request)
 
-    if build_name == run_name:
-        return
-
-    if runner is None:
-        runner, runner_options = load_backend(run_name, run_config)
-    logger.info("Handing image from '%s' to '%s'", build_name, run_name)
-    with timed(f"Import ({run_name})", logger):
-        fmt = hand_over(
-            builder,
-            runner,
-            BuildRequest(image_name=IMAGE_NAME, config=config, options=builder_options, tag=tag),
-            BuildRequest(image_name=IMAGE_NAME, config=config, options=runner_options, tag=tag),
-        )
-    logger.info("Handed over as '%s'", fmt)
+    if hand_over_after:
+        import_into_runner(run_config, builder, builder_options, build_name, run_name, config, tag)
 
 
 def split_command(argv: list[str]) -> tuple[list[str], list[str]]:

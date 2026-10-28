@@ -1072,8 +1072,37 @@ def test_firecracker_only_supports_the_default_tag(ccd, tmp_path, monkeypatch, c
     code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", "--tag", "next")
     assert code == 1 and not calls and "keeps a single image" in capsys.readouterr().err
 
+    capsys.readouterr()
     code, calls = ccd("build", "--tag", "next", toml='[build]\nbackend = "fake-build"\n[run]\nbackend = "firecracker"\n')
-    assert code == 1 and not calls and "keeps a single image" in capsys.readouterr().err  # before anything was built
+    assert code == 0 and [(b, op) for b, op, _ in calls] == [("fake-build", "build")]  # built, but not handed to the single-image backend
+    assert "Not importing ccd:next into firecracker (it only runs 'latest')" in capsys.readouterr().err
+
+
+def test_tagged_build_is_not_imported_when_the_run_backend_is_unavailable(ccd, capsys):
+    code, calls = ccd("build", "--tag", "next", toml='[build]\nbackend = "fake-build"\n[run]\nbackend = "firecracker"\n')  # not installed here
+
+    assert code == 0 and [(b, op) for b, op, _ in calls] == [("fake-build", "build")]
+    assert "Not importing ccd:next into firecracker" in capsys.readouterr().err
+
+
+def test_default_tag_build_is_still_handed_over(ccd):
+    _, calls = ccd("build", toml='[build]\nbackend = "fake-build"\n[run]\nbackend = "fake-run"\n')
+
+    assert ("fake-run", "import") in [(b, op) for b, op, _ in calls]
+
+
+def test_tagged_build_is_handed_over_to_a_run_backend_that_supports_tags(ccd):
+    _, calls = ccd("build", "--tag", "next", toml='[build]\nbackend = "fake-build"\n[run]\nbackend = "fake-run"\n')
+
+    assert ("fake-run", "import") in [(b, op) for b, op, _ in calls]
+
+
+def test_promoting_to_latest_hands_the_image_to_the_run_backend(ccd):
+    _, calls = ccd("tag", "next", "latest", toml='[build]\nbackend = "fake-build"\n[run]\nbackend = "fake-run"\n')
+    assert [(b, op) for b, op, _ in calls if op != "release"] == [("fake-build", "tag"), ("fake-build", "provide"), ("fake-run", "import")]
+    assert calls[0][2] == ("next", "latest")
+
+    ccd("tag", "latest", "previous", toml='[build]\nbackend = "fake-build"\n[run]\nbackend = "fake-run"\n')  # a backup moves nothing
 
 
 def test_build_tag_reaches_the_build_request(ccd):
@@ -1136,11 +1165,11 @@ def test_tag_command_tags_on_docker_podman_and_buildah(ccd, monkeypatch, capsys)
 
     ccd("tag", "next", "latest", toml='[run]\nbackend = "docker"\n')
     ccd("tag", "latest", "previous", toml='[run]\nbackend = "podman"\n')
-    ccd("tag", "next", "latest", toml='[build]\nbackend = "buildah"\n[run]\nbackend = "fake"\n')
+    ccd("tag", "next", "stable", toml='[build]\nbackend = "buildah"\n[run]\nbackend = "fake"\n')
 
     assert ["docker", "tag", "ccd:next", "ccd"] in commands
     assert ["podman", "tag", "localhost/ccd", "localhost/ccd:previous"] in commands
-    assert ["buildah", "tag", "localhost/ccd:next", "localhost/ccd"] in commands
+    assert ["buildah", "tag", "localhost/ccd:next", "localhost/ccd:stable"] in commands
     assert "Tagged ccd:next as ccd in docker" in capsys.readouterr().out
 
 
@@ -1159,9 +1188,11 @@ def test_tag_command_reports_a_failing_tool(ccd, monkeypatch, capsys):
     assert code == 1 and "No such image: ccd:ghost" in capsys.readouterr().err
 
 
-def test_tag_command_rejects_bad_tags_and_backends_that_cannot_tag(ccd, capsys):
+def test_tag_command_rejects_bad_tags_and_backends_that_keep_one_image(ccd, monkeypatch, capsys):
+    monkeypatch.setattr("ccd.backends.firecracker.FirecrackerBackend.check_available", lambda self: None)
+
     code, _ = ccd("tag", "next", "has space", toml='[run]\nbackend = "fake"\n')
     assert code == 1 and "Invalid image tag" in capsys.readouterr().err
 
-    code, _ = ccd("tag", "next", "latest", toml='[run]\nbackend = "fake"\n')  # the test backend has no tagging
-    assert code == 1 and "cannot tag images" in capsys.readouterr().err
+    code, _ = ccd("tag", "next", "latest", toml='[build]\nbackend = "firecracker"\n[run]\nbackend = "firecracker"\n')
+    assert code == 1 and "keeps a single image" in capsys.readouterr().err

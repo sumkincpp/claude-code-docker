@@ -68,6 +68,9 @@ class RecordingBackend(plugin.Backend):
     def describe_image(self, built_id, options):
         return self.verdict
 
+    def tag_image(self, name, source, target, options):
+        CALLS.append((self.name, "tag", (source, target)))
+
     def prune(self, options, dry_run):
         CALLS.append((self.name, "prune", dry_run))
         return ["removed leftover"]

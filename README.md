@@ -230,8 +230,12 @@ ccd status --tag next          # the image id behind a tag
 
 `[build] tag` and `[run] tag` in `ccd.toml` change the default tag, and the flag wins over them. A tag may contain letters,
 digits, `_`, `.` and `-` (at most 128 characters, not starting with `.` or `-`). Extra tags share layers, so they cost little
-disk, but removing one is manual (`docker rmi ccd:next`). `ccd tag` works on docker, podman, gvisor and buildah; firecracker
-keeps a single image and accepts only `latest`.
+disk, but removing one is manual (`docker rmi ccd:next`). `ccd tag` works on docker, podman, gvisor and buildah.
+
+Firecracker keeps a single image and runs only `latest`. With a different run backend (for example `[run] backend = "firecracker"`
+and `[build] backend = "docker"`), `ccd build --tag next` builds `ccd:next` on the build backend and does not import it, with a
+warning. Making it `latest` is what imports it: `ccd tag next latest` moves the tag and hands the image to firecracker. To try a
+tagged image meanwhile, run it on the build backend: `ccd run --tag next --backend docker`.
 
 ### Run Container (ccd run / ccd .)
 
