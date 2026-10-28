@@ -194,11 +194,6 @@ def _link(features: dict[str, Feature]) -> dict[str, Feature]:
             raise FeatureError(f"feature '{feature.name}' requires unknown '{missing[0]}'")
         feature.requires = tuple(dict.fromkeys(provider[r] for r in feature.requires))
 
-    for feature in features.values():
-        for dependency in feature.requires:
-            if features[dependency].paths and not feature.paths:
-                raise FeatureError(f"feature '{feature.name}' has no paths, so it installs before the features that have them, but it requires '{dependency}' which has paths")
-
     _check_acyclic(features)
     return features
 

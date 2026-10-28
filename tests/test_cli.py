@@ -1321,3 +1321,23 @@ def test_flatten_can_come_from_the_flag_or_the_config(ccd, capsys):
     configured = capsys.readouterr().out
 
     assert "AS flat" not in default and "FROM scratch AS flat" in flagged and flagged == configured
+
+
+def test_print_plan_shows_where_each_feature_is_installed_and_prints_no_dockerfile(ccd, capsys):
+    code, calls = ccd("build", "--print-plan", "--with", "claude,go", toml='[run]\nbackend = "fake"\n')
+
+    out = capsys.readouterr().out.splitlines()
+    assert code == 0 and not calls and out[0].split() == ["FEATURE", "STAGE", "BUILT", "ON"]
+    rows = {line.split()[0]: line.split()[1:] for line in out[1:]}
+    assert rows["claude"] == ["f-claude", "f-pnpm"] and rows["go"] == ["f-go", "pre"] and rows["nvm"] == ["f-nvm", "pre"]
+    assert not any(line.startswith("FROM") for line in out)
+
+
+def test_a_project_feature_that_requires_a_bundled_one_is_installed_in_post(ccd, tmp_path, capsys):
+    (tmp_path / ".ccd" / "features" / "mytool").mkdir(parents=True)
+    (tmp_path / ".ccd" / "features" / "mytool" / "feature.toml").write_text('requires = ["pnpm"]\nversion = false\n[install]\ncommand = "echo mytool"\n')
+
+    code, _ = ccd("build", "--print-plan", "--with", "mytool", toml='[run]\nbackend = "fake"\n')
+
+    rows = {line.split()[0]: line.split()[1:] for line in capsys.readouterr().out.splitlines()[1:]}
+    assert code == 0 and rows["mytool"] == ["post", "final"] and rows["pnpm"] == ["f-pnpm", "f-node"]

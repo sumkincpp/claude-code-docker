@@ -16,18 +16,29 @@ BASE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 @dataclass
-class Plan:
-    """How a renderer lays the selection out."""
+class Stage:
+    """A rendered stage that builds one feature."""
 
-    pre: list[Feature]  # installed one after the other in the `pre` stage
-    stages: list[str] = field(default_factory=list)  # further stages, already rendered
-    assembly: list[str] = field(default_factory=list)  # what `final` does before the checks, for example copying from the stages
+    feature: str
+    name: str
+    parent: str  # the stage it starts from
+    text: str
+
+
+@dataclass
+class Plan:
+    """Where every selected feature goes."""
+
+    pre: list[Feature]  # installed one after the other in the `pre` stage, before anything else
+    stages: list[Stage] = field(default_factory=list)  # a stage of their own each, between `pre` and `final`
+    assembly: list[str] = field(default_factory=list)  # what `final` does before anything else, for example copying from the stages
+    post: list[Feature] = field(default_factory=list)  # installed one after the other in `post`, on top of the finished `final`
 
 
 class DockerfileRenderer(Renderer):
-    """Core head, `pre`, the planned stages, `final`, core tail, and with options.flatten a last stage with the image in one layer.
+    """Core head, `pre`, the planned stages, `final`, an optional `post`, core tail, and with options.flatten a last stage with the image in one layer.
 
-    The final stage also runs the check of everything and records what is installed, so whatever a layout loses on the
+    The last stage also runs the check of everything and records what is installed, so whatever a layout loses on the
     way into the image shows up as a failing check.
     """
 
@@ -36,14 +47,21 @@ class DockerfileRenderer(Renderer):
 
     def render(self, selected: Sequence[Feature]) -> str:
         plan = self.plan(selected)
-        declared: set[str] = set()
         head = (CORE_DIR / "head.Dockerfile").read_text().rstrip()
         tail = (CORE_DIR / "tail.Dockerfile").read_text().rstrip()
         parts = [head, "FROM base AS pre"]
+        declared: set[str] = set()
         for feature in plan.pre:
             parts.append("\n".join([heading(feature), *install_lines(feature, dependencies(feature, selected), declared)]))
-        parts.extend(plan.stages)
+        parts.extend(stage.text for stage in plan.stages)
         parts.append("\n".join(["# Assemble the features", "FROM pre AS final", *plan.assembly]))
+        last = "final"
+        if plan.post:
+            last = "post"
+            declared = set()  # ARGs do not carry over from another stage
+            parts.append("# Features that need the finished image\nFROM final AS post")
+            for feature in plan.post:
+                parts.append("\n".join([heading(feature), *install_lines(feature, dependencies(feature, selected), declared)]))
         verify = [command for feature in selected for command in feature.verify]
         if verify:
             parts.append("# Verify installations\n" + run(verify))
@@ -51,25 +69,32 @@ class DockerfileRenderer(Renderer):
             parts.append("# Record what is installed\n" + run([f": > {INSTALLED_FILE}", *(record(f) for f in selected)]))
         parts.append(tail)
         if self.options.flatten:
-            parts.append(self.flat_stage(plan, head, tail, verify))
+            parts.append(self.flat_stage(plan, head, tail, verify, last))
         return "\n\n".join(parts) + "\n"
 
+    def explain(self, selected: Sequence[Feature]) -> list[tuple[str, str, str]]:
+        plan = self.plan(selected)
+        rows = {f.name: (f.name, "pre", "base") for f in plan.pre}
+        rows.update({s.feature: (s.feature, s.name, s.parent) for s in plan.stages})
+        rows.update({f.name: (f.name, "post", "final") for f in plan.post})
+        return [rows[f.name] for f in selected]
+
     @staticmethod
-    def flat_stage(plan: Plan, head: str, tail: str, verify: Sequence[str]) -> str:
+    def flat_stage(plan: Plan, head: str, tail: str, verify: Sequence[str], last: str) -> str:
         """The finished image copied into a stage that starts from scratch, so it is one layer.
 
         A copy keeps the files but not the image config, so the config is replayed: the environment of the head and of
         the features, then the working directory, user and entrypoint of the tail. The checks run once more to show the
         replay is right.
         """
-        features_env = [line for line in (*environment(plan.pre, set()), *plan.assembly) if line.startswith(("ARG ", "ENV "))]
+        features_env = [line for line in (*environment(plan.pre, set()), *plan.assembly, *environment(plan.post, set())) if line.startswith(("ARG ", "ENV "))]
         config = [
             f'ENV PATH="{BASE_PATH}"',
             *(line for line in head.splitlines() if line.startswith("ENV ")),
             *features_env,
             *(line for line in tail.splitlines() if line.startswith(("WORKDIR ", "USER ", "ENTRYPOINT ", "CMD "))),
         ]
-        lines = ["# Flatten the image into one layer", "FROM scratch AS flat", "COPY --from=final / /", *config]
+        lines = ["# Flatten the image into one layer", "FROM scratch AS flat", f"COPY --from={last} / /", *config]
         if verify:
             lines.append(run(verify))
         return "\n".join(lines)

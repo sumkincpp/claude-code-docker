@@ -437,8 +437,13 @@ def build_image(args: argparse.Namespace, run_config: RunConfig, extra_args: lis
 
     try:
         renderer = get_renderer(config.mode, RenderOptions(flatten=config.flatten))
+        plan = renderer.explain(selected)  # also refuses a layout that cannot be built, before anything is built
     except RendererError as e:
         raise BackendError(str(e)) from e
+
+    if args.print_plan:
+        print_table([("FEATURE", "STAGE", "BUILT ON"), *plan] if plan else [("This renderer has no stages",)])
+        return
 
     if args.print_dockerfile:
         print(renderer.render(selected), end="")
@@ -552,6 +557,12 @@ def main() -> None:
         "--npm-audit-force-fix-components",
         dest="npm_audit_force_fix_components",
         help="Comma-separated npm CLI components that should run npm audit fix --force before final audit checks",
+    )
+    build_parser.add_argument(
+        "--print-plan",
+        dest="print_plan",
+        action="store_true",
+        help="Print where each selected feature is installed (stage and what it is built on) and exit",
     )
     build_parser.add_argument(
         "--print-dockerfile",

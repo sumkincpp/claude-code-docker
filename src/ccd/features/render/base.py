@@ -36,6 +36,13 @@ class Renderer(ABC):
     def render(self, selected: Sequence[Feature]) -> str:
         """The build file for the selection, for example a Dockerfile."""
 
+    def explain(self, selected: Sequence[Feature]) -> list[tuple[str, str, str]]:
+        """Where each selected feature goes, as (feature, stage, built on) rows in install order; empty when the renderer has no stages.
+
+        Raises RendererError for a selection it cannot lay out.
+        """
+        return []
+
     @abstractmethod
     def stage_context(self, selected: Sequence[Feature], destination: Path) -> Path:
         """Write the build file and everything it needs into destination, and return the path of the build file."""

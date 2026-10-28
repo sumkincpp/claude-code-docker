@@ -154,7 +154,19 @@ Rules:
 - Be precise in shared folders: `~/.local/bin/uv`, not `~/.local/bin`, when other features write there too. Two features may list the same folder, then both are copied and the folders merge.
 - List a folder, not a symlink, when you want links kept: a link named as the source is copied as the file it points to, a link inside a copied folder stays a link.
 - A feature that changes files of what it requires lists them too (pnpm updates npm inside `~/.nvm`).
-- A feature that installs as root cannot have paths. A feature without paths installs first, in order, in the `pre` stage, exactly as before. It cannot require a feature that has paths.
+- A feature that installs as root cannot have paths.
+- A feature without paths needs none: it installs in `pre`, first and in order, unless it requires a feature that has paths (every bundled one has). Then it installs in `post`, after the image is assembled, on top of it. It is not built in parallel, but it works as it always did.
+- A feature with paths cannot require one that installs in `post`, because it is built before the image is assembled. ccd says so and names both: give the second one paths.
+
+`ccd build --print-plan` shows where each selected feature goes (its stage and what it is built on) without building anything:
+
+```
+FEATURE  STAGE   BUILT ON
+nvm      f-nvm   pre
+node     f-node  f-nvm
+pnpm     f-pnpm  f-node
+mytool   post    final
+```
 - Files keep their owner when copied. ccd copies with `--chown=user:user` so the folders it has to create are the user's too.
 
 ## How features become a Dockerfile
@@ -167,7 +179,9 @@ How the selection is laid out is up to a renderer, chosen with `ccd build --mode
    - `base`: the base image part.
    - `pre`: the features without paths, one block each in order.
    - `f-<name>`: one stage per feature with paths. With one requirement it starts from that requirement's stage (nvm, node, pnpm and the CLIs form a chain), otherwise from `pre` with the paths of everything it needs copied in.
-   - `final`: starts from `pre`, copies every feature's paths over from its stage, runs every verify command in one step, records what is installed (`/metadata/installed.jsonl`), then the entrypoint part.
+   - `final`: starts from `pre` and copies every feature's paths over from its stage.
+   - `post`: only if a feature without paths needs one that has them. Starts from `final` and installs those features in order.
+   - Then, in the last of these stages: one step that runs every verify command, the record of what is installed (`/metadata/installed.jsonl`), and the entrypoint part.
 
 Each block declares its build args right before its RUN and the RUN references each of them. A stage does not inherit build args, so each stage declares the ones it uses. Docker then reuses a layer as long as its text, its args and its assets are unchanged and everything before it in the same stage is too, so changing one version rebuilds that feature's stage and the final stage.
 

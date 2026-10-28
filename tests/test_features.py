@@ -219,12 +219,52 @@ def test_paths_are_normalized_and_cannot_be_combined_with_root_installs(tmp_path
         load(tmp_path)
 
 
-def test_a_feature_without_paths_cannot_require_one_with_paths(tmp_path):
-    write(tmp_path, "base-tool", _staged('["~/b"]'))
-    write(tmp_path, "plain", 'requires = ["base-tool"]\n[install]\ncommand = "true"\n')
+def test_where_a_feature_is_installed_follows_its_paths_and_what_it_requires(tmp_path):
+    write(tmp_path, "tool", _staged('["~/t"]'))
+    write(tmp_path, "alone", 'version = false\n[install]\ncommand = "echo alone"\n')
+    write(tmp_path, "needs-tool", 'requires = ["tool"]\nversion = false\n[install]\ncommand = "echo needs-tool"\n')
+    write(tmp_path, "needs-needs-tool", 'requires = ["needs-tool"]\nversion = false\n[install]\ncommand = "echo needs-needs-tool"\n')
+    selected = select(load(tmp_path))
 
-    with pytest.raises(FeatureError, match="'plain' has no paths.*'base-tool'"):
-        load(tmp_path)
+    plan = get_renderer("parallel").explain(selected)
+
+    assert plan == [("alone", "pre", "base"), ("tool", "f-tool", "pre"), ("needs-tool", "post", "final"), ("needs-needs-tool", "post", "final")]
+    assert get_renderer("sequential").explain(selected) == [(name, "pre", "base") for name in ("alone", "tool", "needs-tool", "needs-needs-tool")]
+
+
+def test_features_that_need_the_assembled_image_are_installed_in_post_before_the_checks(tmp_path):
+    text = render(
+        tmp_path,
+        tool=_staged('["~/t"]', '[verify]\ncommand = "tool --version"\n'),
+        mine='requires = ["tool"]\nversion = false\n[install]\ncommand = "mine install"\n[verify]\ncommand = "mine --version"\n',
+    )
+
+    assert text.index("FROM pre AS final") < text.index("FROM final AS post") < text.index("mine install") < text.index("# Verify installations") < text.index("# Record what is installed")
+    assert "mine install" not in text[: text.index("FROM final AS post")]
+    checks = text[text.index("# Verify installations"):text.index("# Record what is installed")]
+    assert "tool --version" in checks and "mine --version" in checks
+    assert '"name": "mine"' in text[text.index("# Record what is installed"):]
+
+
+def test_post_gets_the_args_it_uses_because_args_do_not_carry_over(tmp_path):
+    text = render(
+        tmp_path,
+        provider=_staged('["~/p"]', '[args]\nPOLICY = "7"\n'),
+        mine='requires = ["provider"]\nversion = false\n[install]\ncommand = "true"\n',
+    )
+
+    post = text[text.index("FROM final AS post"):]
+    assert post.index("ARG POLICY=7") < post.index('export POLICY="${POLICY}"')
+
+
+def test_a_feature_with_paths_cannot_require_one_that_is_installed_after_the_assembly(tmp_path):
+    write(tmp_path, "tool", _staged('["~/t"]'))
+    write(tmp_path, "late", 'requires = ["tool"]\nversion = false\n[install]\ncommand = "true"\n')
+    write(tmp_path, "early", _staged('["~/e"]', 'requires = ["late"]\n'))
+
+    with pytest.raises(RendererError, match="'early' has paths.*requires 'late'.*give it paths too"):
+        get_renderer("parallel").explain(select(load(tmp_path)))
+    get_renderer("sequential").explain(select(load(tmp_path)))  # one stage, in order: nothing to refuse
 
 
 def test_staged_features_build_on_their_single_requirement_and_otherwise_on_pre(tmp_path):
@@ -382,3 +422,13 @@ def test_nothing_is_flattened_unless_asked_for():
 
     assert "AS flat" not in get_renderer().render(selected)
     assert "AS flat" not in get_renderer("sequential", RenderOptions()).render(selected)
+
+
+def test_flatten_copies_from_post_and_replays_its_environment(tmp_path):
+    write(tmp_path, "tool", _staged('["~/t"]'))
+    write(tmp_path, "mine", 'requires = ["tool"]\nversion = false\n[env]\nMINE = "1"\n[install]\ncommand = "true"\n')
+
+    flat = get_renderer("parallel", RenderOptions(flatten=True)).render(select(load(tmp_path)))
+
+    stages = _stages(flat)
+    assert stages["flat"][0] == "COPY --from=post / /" and 'ENV MINE="1"' in stages["flat"]
