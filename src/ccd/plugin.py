@@ -7,17 +7,19 @@ can add runtimes without touching the core.
 
 import argparse
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
 
-from ccd.config import BuildConfig
+from ccd.config import DEFAULT_TAG, BuildConfig, image_ref
 
 ENTRY_POINT_GROUP = "ccd.backends"
 
@@ -51,6 +53,9 @@ class BuildRequest:
     config: BuildConfig
     extra_args: list[str] = field(default_factory=list)
     options: dict[str, Any] = field(default_factory=dict)
+    dockerfile: Path | None = None  # generated from the selected features, set when there is something to build
+    context: Path | None = None
+    tag: str = DEFAULT_TAG
 
 
 @dataclass
@@ -62,6 +67,8 @@ class RunRequest:
     root: bool
     mounts: list[ResolvedMount]
     options: dict[str, Any] = field(default_factory=dict)
+    command: list[str] = field(default_factory=list)  # one-off command to run instead of an interactive shell
+    tag: str = DEFAULT_TAG
 
 
 @dataclass
@@ -72,33 +79,88 @@ class AttachRequest:
 
 
 @dataclass
-class ImageSource:
-    """An image handed from the build backend to a different run backend.
+class ImageInfo:
+    """One row of `ccd images`: a piece of build data a backend holds (an image, a rootfs, a kernel).
 
-    `formats` lists the cheap native forms the image is already available in (e.g. "docker-daemon");
-    `archive()` falls back to exporting a `docker save`-style tar, which can be very slow, only when asked.
+    Backends fill in plain values (bytes, a datetime); `ccd images` formats them the same way for every backend.
     """
 
+    backend: str
+    kind: str
     name: str
-    formats: set[str]
-    exporter: Callable[[Path], None]
-    archive_path: Path
+    id: str = ""
+    size: int | None = None  # bytes
+    created: datetime | None = None
 
-    def archive(self) -> Path:
-        try:
-            self.archive_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            parent = self.archive_path.parent
-            raise BackendError(f"Cannot create image store {parent}: {e.strerror}. Check ownership: ls -ld {parent.parent} {parent.parent.parent}") from e
-        with timed("Image export", logger):
-            self.exporter(self.archive_path)
-        return self.archive_path
+
+def human_size(size: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1000 or unit == "GB":
+            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1000
+    return ""
+
+
+AGO_LIMIT = timedelta(days=7)  # older than this, `ccd images` shows the date instead of "N days ago"
+
+
+def utcnow() -> datetime:
+    """The current time; the one place ages read the clock, so tests can replace it."""
+    return datetime.now(timezone.utc)
+
+
+def _aware(moment: datetime) -> datetime:
+    """A time without a zone is local time; ages are computed on zone-aware times so DST changes cannot shift them."""
+    return moment if moment.tzinfo else moment.astimezone()
+
+
+def format_age(created: datetime, now: datetime | None = None) -> str:
+    """'just now', '5 minutes ago', '3 hours ago', '2 days ago' up to AGO_LIMIT, then the local date ('2026-10-18')."""
+    created = _aware(created)
+    age = _aware(now or utcnow()) - created
+    if age >= AGO_LIMIT:
+        return created.astimezone().strftime("%Y-%m-%d")
+    seconds = max(int(age.total_seconds()), 0)
+    for unit, length in (("day", 86400), ("hour", 3600), ("minute", 60)):
+        if seconds >= length:
+            count = seconds // length
+            return f"{count} {unit}{'' if count == 1 else 's'} ago"
+    return "just now"
+
+
+def short_id(image_id: str) -> str:
+    return image_id.removeprefix("sha256:")[:12]
+
+
+def parse_size(text: str) -> int | None:
+    """'3.82 GB' / '800MB' (decimal units, as docker and buildah print them) to bytes."""
+    match = re.fullmatch(r"\s*([\d.]+)\s*([kKMGT]?)B?\s*", text)
+    if not match:
+        return None
+    return int(float(match.group(1)) * 1000 ** ("", "k", "M", "G", "T").index(match.group(2).replace("K", "k")))
+
+
+def parse_time(text: str) -> datetime | None:
+    """RFC 3339 ('2026-10-25T19:50:12.123456789Z') or buildah's 'Oct 25, 2026 19:50' (local time) to a zone-aware datetime."""
+    text = text.strip()
+    try:
+        return datetime.strptime(text, "%b %d, %Y %H:%M").astimezone()
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", text.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+    return _aware(parsed)
 
 
 class Backend(ABC):
     """A runtime that can build, run and attach to ccd environments."""
 
     name: str
+    can_build = True
+    can_run = True
+    supports_tags = True  # False for backends that keep a single image
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         """Hook for contributing backend-specific CLI flags to build/run/attach."""
@@ -110,7 +172,8 @@ class Backend(ABC):
     def build(self, request: BuildRequest) -> None: ...
 
     @abstractmethod
-    def run(self, request: RunRequest) -> None: ...
+    def run(self, request: RunRequest) -> int | None:
+        """Run the environment until the shell or command ends; return its exit code (None counts as 0)."""
 
     @abstractmethod
     def attach(self, request: AttachRequest) -> None: ...
@@ -119,17 +182,60 @@ class Backend(ABC):
     def list_running(self) -> list[str]:
         """Names of running environments, unfiltered."""
 
-    def export_image(self, request: BuildRequest, dest: Path) -> None:
-        """Write the built image to `dest` as a `docker save`-style archive (for a different run backend)."""
-        raise BackendError(f"Backend '{self.name}' cannot export images")
+    def prune(self, options: dict[str, Any], dry_run: bool) -> list[str]:
+        """Remove leftovers of dead runs (or only list them when dry_run); returns what was or would be done."""
+        return []
 
-    def image_formats(self) -> set[str]:
-        """Native image forms this backend's builds are available in without exporting (e.g. {"docker-daemon"})."""
-        return set()
+    def images(self, options: dict[str, Any]) -> list[ImageInfo]:
+        """Build data this backend holds (images, rootfs, kernel) for `ccd images`."""
+        return []
 
-    def import_image(self, source: ImageSource, request: BuildRequest) -> None:
-        """Make an image built by another backend runnable by this backend (prefer source.formats over source.archive())."""
+    def built_image_id(self, request: BuildRequest) -> str:
+        """Builder side: id of the image the last build produced, or "" when there is none."""
+        return ""
+
+    def tag_image(self, name: str, source: str, target: str, options: dict[str, Any]) -> None:
+        """Builder side: give the image tagged `source` the additional tag `target`, replacing it if it exists."""
+        raise BackendError(f"Backend '{self.name}' cannot tag images")
+
+    def read_image_file(self, name: str, tag: str, path: str, options: dict[str, Any]) -> str:
+        """Builder side: contents of the file `path` in the image tagged `tag`, without starting its entrypoint."""
+        raise BackendError(f"Backend '{self.name}' cannot read files from images")
+
+    def describe_image(self, built_id: str, options: dict[str, Any]) -> str:
+        """Runner side: how its prepared image relates to the builder's current image `built_id` (for `ccd status`)."""
+        return ""
+
+    def image_formats(self) -> list[str]:
+        """Builder side: formats this backend's builds can be provided in, cheapest first (e.g. ["docker-daemon"])."""
+        return []
+
+    def provide_image(self, fmt: str, request: BuildRequest) -> AbstractContextManager[str | Path]:
+        """Builder side: make the built image available in `fmt` and yield where it is (an image name or a path).
+        Whatever was set up is released when the block exits. In-place formats need no work: the image is addressed by name."""
+        return nullcontext(image_ref(request.image_name, request.tag))
+
+    def accepted_formats(self) -> list[str]:
+        """Runner side: formats this backend can import, best first."""
+        return []
+
+    def import_image(self, fmt: str, location: str | Path, request: BuildRequest) -> None:
+        """Runner side: make an image built by another backend, available as `fmt` at `location`, runnable by this backend."""
         raise BackendError(f"Backend '{self.name}' cannot import images")
+
+
+def hand_over(builder: Backend, runner: Backend, builder_request: BuildRequest, runner_request: BuildRequest) -> str:
+    """Hand an image from its builder to a different run backend in the first format the runner accepts and the builder offers."""
+    offered, accepted = builder.image_formats(), runner.accepted_formats()
+    fmt = next((f for f in accepted if f in offered), None)
+    if fmt is None:
+        raise BackendError(
+            f"Backend '{runner.name}' cannot run images built by '{builder.name}' "
+            f"({builder.name} offers: {', '.join(offered) or 'nothing'}; {runner.name} accepts: {', '.join(accepted) or 'nothing'})"
+        )
+    with builder.provide_image(fmt, builder_request) as location:
+        runner.import_image(fmt, location, runner_request)
+    return fmt
 
 
 @dataclass
@@ -147,6 +253,11 @@ class _BuiltinBackend:
 
 BUILTIN_BACKENDS = {
     "docker": "ccd.backends.docker:DockerBackend",
+    "buildah": "ccd.backends.buildah:BuildahBackend",
+    "podman": "ccd.backends.podman:PodmanBackend",
+    "firecracker": "ccd.backends.firecracker:FirecrackerBackend",
+    "gvisor-docker": "ccd.backends.gvisor:GVisorDockerBackend",
+    "gvisor-podman": "ccd.backends.gvisor:GVisorPodmanBackend",
 }
 
 

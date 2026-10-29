@@ -1,0 +1,9 @@
+description = "opencode CLI"
+paths = ["~/.local/share/ccd/pnpm-installs/opencode", "~/.local/bin/opencode", "/metadata/pnpm-cli-resolution"]
+requires = ["pnpm"]
+
+[install]
+command = "ccd-npm-install opencode opencode-ai --binary opencode --version \"$OPENCODE_VERSION\" --built-dependency"
+
+[verify]
+command = "opencode --version"

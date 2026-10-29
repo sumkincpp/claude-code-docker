@@ -1,0 +1,9 @@
+description = "uv, the Python package manager"
+paths = ["~/.local/bin/uv", "~/.local/bin/uvx"]
+order = 17
+
+[install]
+command = 'if [ "$UV_VERSION" = latest ]; then curl -LsSf https://astral.sh/uv/install.sh | sh; else curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh; fi'
+
+[verify]
+command = "uv --version"

@@ -1,0 +1,1343 @@
+"""End-to-end CLI tests: argv + ccd.toml in, backend calls out. No Docker, KVM or root needed."""
+
+from pathlib import Path
+
+import pytest
+
+
+def test_run_mounts_app_and_agent_config_and_defaults_to_user(ccd, tmp_path):
+    app, home = tmp_path / "myapp", tmp_path / "home"
+    app.mkdir()
+
+    code, calls = ccd("run", str(app), "--home", str(home), "--backend", "fake")
+
+    assert code == 0
+    (_, op, request), = calls
+    assert op == "run"
+    assert request.root is False
+    assert request.name == "ccd-myapp-01"
+    assert (app.resolve(), Path("/app")) in {(m.host, m.container) for m in request.mounts}
+    assert (home / ".claude").is_dir()  # prepared on the host before the run
+    assert any(str(m.container) == "/home/user/.claude" for m in request.mounts)
+
+
+def test_user_flag_logs_in_as_root_and_resources_pass_through(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", "-u", "root", "--memory", "2g", "--cpus", "4")
+
+    request = calls[0][2]
+    assert (code, request.root, request.memory, request.cpus) == (0, True, "2g", "4")
+
+
+def test_run_backend_comes_from_toml_and_gets_its_option_table(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+    toml = '[run]\nbackend = "fake-run"\n\n[fake-run]\nvcpus = 3\n'
+
+    _, calls = ccd("run", "app", "--home", str(tmp_path / "h"), toml=toml)
+
+    backend, op, request = calls[0]
+    assert (backend, op, request.options) == ("fake-run", "run", {"vcpus": 3})
+
+
+def test_cli_backend_flag_beats_toml(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+
+    _, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml='[run]\nbackend = "fake-run"\n')
+
+    assert calls[0][0] == "fake"
+
+
+def test_build_on_one_backend_hands_the_image_to_the_run_backend(ccd):
+    toml = '[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n'
+
+    code, calls = ccd("build", toml=toml)
+
+    assert code == 0
+    assert [(backend, op) for backend, op, _ in calls] == [
+        ("fake-build", "build"),
+        ("fake-build", "provide"),
+        ("fake-run", "import"),
+        ("fake-build", "release"),  # the builder keeps the image available until the runner is done
+    ]
+    assert calls[2][2] == ("fake-native", "ccd")
+
+
+def test_build_with_the_same_backend_does_not_hand_over(ccd):
+    _, calls = ccd("build", toml='[run]\nbackend = "fake"\n')
+
+    assert [(backend, op) for backend, op, _ in calls] == [("fake", "build")]
+
+
+def test_build_backend_flag_overrides_only_the_build_side(ccd):
+    _, calls = ccd("build", "--backend", "fake-build", toml='[run]\nbackend = "fake-run"\n')
+
+    assert [(backend, op) for backend, op, _ in calls if op != "release"] == [("fake-build", "build"), ("fake-build", "provide"), ("fake-run", "import")]
+
+
+def test_attach_picks_the_single_running_environment_as_root(ccd):
+    from conftest import RecordingBackend
+
+    RecordingBackend.running = ["ccd-myapp-01", "unrelated"]  # names outside ccd's prefix are ignored
+
+    code, calls = ccd("attach", "--backend", "fake", "-u", "root")
+
+    (_, op, request), = calls
+    assert (code, op, request.name, request.root) == (0, "attach", "ccd-myapp-01", True)
+
+
+def test_unknown_backend_fails_cleanly(ccd, tmp_path, capsys):
+    (tmp_path / "app").mkdir()
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "nope")
+
+    assert code == 1 and calls == []
+    assert "nope" in capsys.readouterr().err
+
+
+def test_backends_command_lists_shipped_plugins(ccd, capsys):
+    ccd("backends")
+
+    assert {"docker", "firecracker"} <= set(capsys.readouterr().out.split())
+
+
+def test_prune_is_a_dry_run_unless_told_otherwise(ccd, capsys):
+    code, calls = ccd("prune", "--backend", "fake")
+
+    assert (code, calls) == (0, [("fake", "prune", True)])
+    out = capsys.readouterr().out
+    assert "Would: removed leftover" in out and "--no-dry-run" in out
+
+
+def test_prune_no_dry_run_removes(ccd, capsys):
+    _, calls = ccd("prune", "--no-dry-run", "--backend", "fake")
+
+    assert calls == [("fake", "prune", False)]
+    assert "Would" not in capsys.readouterr().out
+
+
+def test_firecracker_prune_removes_only_what_belongs_to_dead_vms(ccd, tmp_path, monkeypatch, capsys):
+    import json
+    import os
+
+    from ccd.backends.firecracker import prune as fc_prune
+
+    vms = tmp_path / "fc" / "vms"
+    for name, index, pid in (("ccd-app-01", 0, os.getpid()), ("ccd-app-02", 1, 2**22 + 1)):  # 01 is "running" (this process), 02 is dead
+        (vms / name).mkdir(parents=True)
+        info = {"name": name, "index": index, "pid": pid, "guest_ip": f"10.111.111.{4 * index + 2}"}
+        (vms / name / "info.json").write_text(json.dumps(info))
+    dead_vmm = f"firecracker --no-api --config-file {vms}/ccd-app-02/vm.json"
+    exports = "/home/u/app\n\t\t10.111.111.2(rw,sync)\n\t\t10.111.111.6(rw,sync)\n/srv/other\n\t\t10.1.1.1(rw)\n"
+    state = fc_prune.HostState(
+        taps=["ccdtap0", "ccdtap1"],
+        nft_tables=["ccd_ccd_app_01", "ccd_ccd_app_02"],
+        docker_user_rules=["-A DOCKER-USER -i ccdtap0 -j ACCEPT", "-A DOCKER-USER -i ccdtap1 -j ACCEPT"],
+        exports=fc_prune.parse_exports(exports),
+        mounts=[vms / "ccd-app-01" / "files" / "f0", vms / "ccd-app-02" / "files" / "f0"],
+        processes=[(111, f"firecracker --config-file {vms}/ccd-app-01/vm.json"), (222, dead_vmm)],
+    )
+    monkeypatch.setattr(fc_prune, "read_host_state", lambda root: state)
+    monkeypatch.setattr("ccd.backends.firecracker.FirecrackerBackend.check_available", lambda self: None)  # no KVM needed to list
+    options = f'[firecracker]\ncache_dir = "{tmp_path / "fc"}"\n'
+
+    code, _ = ccd("prune", "--backend", "firecracker", toml=options)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "stop orphaned VM process 222" in out and "process 111" not in out
+    assert "unexport /home/u/app from 10.111.111.6" in out and "10.111.111.2" not in out and "10.1.1.1" not in out
+    assert "delete tap ccdtap1" in out and "ccdtap0" not in out
+    assert "delete nft table ccd_ccd_app_02" in out and "ccd_ccd_app_01" not in out
+    assert "ccdtap1 -j ACCEPT" in out and "ccdtap0 -j" not in out
+    assert str(vms / "ccd-app-02" / "files" / "f0") in out and str(vms / "ccd-app-01" / "files") not in out
+    assert f"remove state dir {vms / 'ccd-app-02'}" in out and f"{vms / 'ccd-app-01'}" not in out.replace("process", "")
+    assert (vms / "ccd-app-02").exists()  # dry run changes nothing
+
+
+def test_vm_addresses_avoid_networks_the_host_already_uses():
+    from ccd.backends.firecracker import net
+
+    routes = "default via 192.168.88.1 dev eth0\n10.111.111.0/29 dev br-pihole proto kernel\n10.111.111.4/30 dev ccdtap0 proto kernel\n"
+    addrs = "2: eth0    inet 192.168.88.10/24 brd 192.168.88.255 scope global eth0\n"
+    taken = net.parse_host_networks(routes, addrs)
+
+    index = net.first_free_index(set(), taken)
+
+    # the pihole's 10.111.111.0/29 covers blocks 0 and 1; our own tap's route is ignored, so block 2 is the first free one
+    assert net.addresses(index) == ("10.111.111.9", "10.111.111.10")
+
+
+def _firecracker_cache(tmp_path, monkeypatch, stamp=True, kernel=True):
+    """A cache dir as `ccd build` leaves it, with host-side checks stubbed out (no KVM, NFS server or root)."""
+    from ccd.backends import firecracker as fc
+
+    cache = tmp_path / "fc"
+    cache.mkdir()
+    (cache / "rootfs.squashfs").write_bytes(b"")
+    if stamp:
+        (cache / "rootfs.image-id").write_text(f"sha256:abc:{fc.assets_hash()}")
+    if kernel:
+        (cache / "vmlinux").write_bytes(b"")
+    monkeypatch.setattr(fc.FirecrackerBackend, "check_available", lambda self: None)
+    monkeypatch.setattr(fc.hostnet, "check_nfs_server", lambda: None)
+    return cache, f'[firecracker]\ncache_dir = "{cache}"\nuplink = "eth0"\n'
+
+
+def test_firecracker_run_warns_about_a_stale_rootfs_and_still_starts(ccd, tmp_path, monkeypatch, capsys):
+    from ccd.backends import firecracker as fc
+
+    cache, toml = _firecracker_cache(tmp_path, monkeypatch, stamp=False)
+    monkeypatch.setattr(fc.hostnet, "setup", lambda net: None)
+    monkeypatch.setattr(fc.hostnet, "teardown", lambda net: None)
+    monkeypatch.setattr(fc.hostnet, "host_networks", lambda: [])
+    monkeypatch.setattr(fc.microvm, "make_upper", lambda path, size: path.write_bytes(b""))
+    started = []
+    monkeypatch.setattr(fc.FirecrackerBackend, "_run_agent_session", staticmethod(lambda *args: started.append(args) or 0))
+    (tmp_path / "app").mkdir()
+
+    for stamp in (None, "sha256:abc:0000000000000000"):  # no stamp at all, then a stamp from other ccd VM files
+        started.clear()
+        capsys.readouterr()
+        if stamp:
+            (cache / "rootfs.image-id").write_text(stamp)
+
+        code, _ = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", toml=toml + 'dns = ["1.1.1.1"]\n')
+
+        err = capsys.readouterr().err
+        assert code == 0 and len(started) == 1  # it still starts
+        assert "older ccd VM files" in err and "run 'ccd build' to update" in err
+
+
+
+def test_firecracker_run_fails_without_dns_and_leaves_no_vm_state(ccd, tmp_path, monkeypatch, capsys):
+    from ccd.backends.firecracker import net
+
+    cache, toml = _firecracker_cache(tmp_path, monkeypatch)
+    resolv = tmp_path / "resolv.conf"
+    resolv.write_text("nameserver 127.0.0.53\nnameserver fe80::1%wlan0\n")  # only addresses the VM cannot use
+    monkeypatch.setattr(net, "RESOLV_CONF", resolv)
+    (tmp_path / "app").mkdir()
+
+    code, _ = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", toml=toml)
+
+    assert code == 1 and "No usable IPv4 DNS server" in capsys.readouterr().err
+    assert not (cache / "vms").exists()
+
+
+def test_firecracker_build_without_a_kernel_fails(ccd, tmp_path, monkeypatch, capsys):
+    from ccd.backends import firecracker as fc
+
+    _, toml = _firecracker_cache(tmp_path, monkeypatch, kernel=False)
+    monkeypatch.setattr(fc.FirecrackerBackend, "_rootfs_from", staticmethod(lambda *args: None))
+
+    code, calls = ccd("build", toml='[build]\nbackend = "fake-docker"\n\n[run]\nbackend = "firecracker"\n' + toml)
+
+    assert code == 1 and "No guest kernel" in capsys.readouterr().err
+
+
+def test_firecracker_refuses_images_in_formats_it_cannot_import(ccd, tmp_path, monkeypatch, capsys):
+    _, toml = _firecracker_cache(tmp_path, monkeypatch)
+
+    code, _ = ccd("build", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "firecracker"\n' + toml)
+
+    assert code == 1 and "cannot run images built by 'fake-build'" in capsys.readouterr().err
+
+
+def test_hand_over_uses_the_runners_first_choice_among_what_the_builder_offers(ccd, monkeypatch):
+    from conftest import FakeBuilder, FakeRunner
+
+    monkeypatch.setattr(FakeBuilder, "offers", ["cheap", "rich"])
+    monkeypatch.setattr(FakeRunner, "accepts", ["rich", "cheap"])  # the runner prefers rich even though it costs more
+
+    _, calls = ccd("build", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n')
+
+    assert ("fake-run", "import", ("rich", "ccd")) in calls
+
+
+def test_hand_over_without_a_common_format_names_both_backends(ccd, monkeypatch, capsys):
+    from conftest import FakeRunner
+
+    monkeypatch.setattr(FakeRunner, "accepts", ["something-else"])
+
+    code, calls = ccd("build", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n')
+
+    out = capsys.readouterr().err
+    assert code == 1 and [op for _, op, _ in calls] == ["build"]
+    assert "fake-build offers: fake-native" in out and "fake-run accepts: something-else" in out
+
+
+def test_builder_releases_the_image_even_when_the_import_fails(ccd, monkeypatch):
+    from conftest import FakeRunner
+
+    monkeypatch.setattr(FakeRunner, "import_fails", True)
+
+    code, calls = ccd("build", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n')
+
+    assert code == 1 and calls[-1][:2] == ("fake-build", "release")
+
+
+def test_buildah_builds_and_firecracker_packs_from_containers_storage(ccd, tmp_path, monkeypatch):
+    import subprocess
+
+    from ccd.backends import firecracker as fc
+
+    cache, toml = _firecracker_cache(tmp_path, monkeypatch)
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd[:2] == ["buildah", "run"]:
+            (cache / fc.TMP_ROOTFS).write_bytes(b"squashfs")  # what mksquashfs would have written
+        return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    code, _ = ccd("build", toml='[build]\nbackend = "buildah"\n\n[run]\nbackend = "firecracker"\n' + toml)
+
+    assert code == 0
+    assert not any(cmd[0] == "docker" for cmd in commands)
+    bud, images, vm_layer, from_, run, rm = commands
+    assert bud[:6] == ["buildah", "bud", "--layers", "-t", "localhost/ccd", "-f"]
+    assert bud[6] == f"{bud[-1]}/Dockerfile"  # the generated Dockerfile in its staged build context
+    assert images[-1] == "localhost/ccd"
+    assert vm_layer[:5] == ["buildah", "bud", "--layers", "-t", "localhost/ccd-vm"] and "BASE_IMAGE=localhost/ccd" in vm_layer
+    assert from_ == ["buildah", "from", "localhost/ccd-vm"]
+    assert run[:2] == ["buildah", "run"] and f"{cache}:/out" in run and "--mount" not in run  # --mount type=bind is read-only by default
+    script = run[-1]
+    assert "mksquashfs" in script and "chown" not in script  # rootless: the output is already the user's
+    assert rm == ["buildah", "rm", "abc123"]
+    assert (cache / "rootfs.squashfs").read_bytes() == b"squashfs"
+    assert (cache / "rootfs.image-id").read_text().startswith("abc123:")
+
+
+def test_docker_image_is_packed_by_docker_and_owned_by_the_invoking_user(ccd, tmp_path, monkeypatch):
+    import os
+    import subprocess
+
+    from ccd.backends import firecracker as fc
+
+    cache, toml = _firecracker_cache(tmp_path, monkeypatch, stamp=False)  # nothing built yet
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd if isinstance(cmd, list) else cmd.split())
+        if cmd[:2] == ["docker", "run"]:
+            (cache / fc.TMP_ROOTFS).write_bytes(b"squashfs")
+        return subprocess.CompletedProcess(cmd, 0, stdout="sha256:abc\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    code, _ = ccd("build", toml='[build]\nbackend = "docker"\n\n[run]\nbackend = "firecracker"\n' + toml)
+
+    assert code == 0
+    run = next(cmd for cmd in commands if cmd[:2] == ["docker", "run"])
+    assert f"chown {os.getuid()}:{os.getgid()} /out/{fc.TMP_ROOTFS}" in run[-1]
+    assert (cache / "rootfs.squashfs").exists()
+
+
+def test_images_lists_every_ready_backend_not_only_the_configured_ones(ccd, capsys):
+    ccd("images", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n')
+
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].split() == ["BACKEND", "KIND", "NAME", "ID", "SIZE", "CREATED"]
+    assert [line.split()[0] for line in out[1:]] == ["fake", "fake-build", "fake-docker", "fake-run"]  # not-ready backends (docker, ...) are skipped
+
+
+def test_images_backend_flag_restricts_the_listing(ccd, capsys):
+    ccd("images", "--backend", "fake-run")
+    assert [line.split()[0] for line in capsys.readouterr().out.splitlines()[1:]] == ["fake-run"]
+
+    ccd("images", "--backend", "docker")  # asked for explicitly: say why there is nothing
+    assert "docker: not ready: disabled in tests" in capsys.readouterr().out
+
+
+def test_status_backend_flag_overrides_the_build_backend(ccd, monkeypatch, capsys):
+    from conftest import FakeBuilder
+
+    monkeypatch.setattr(FakeBuilder, "built_id", "id-from-override")
+
+    ccd("status", "--backend", "fake-build", toml='[build]\nbackend = "fake"\n\n[run]\nbackend = "fake-run"\n')
+
+    assert "Image 'ccd' in fake-build: id-from-override" in capsys.readouterr().out
+
+
+def test_status_reports_backends_image_and_the_run_backends_verdict(ccd, monkeypatch, capsys):
+    from conftest import FakeRunner
+
+    monkeypatch.setattr(FakeRunner, "verdict", "rootfs is up to date")
+    monkeypatch.setattr(FakeRunner, "running", ["ccd-app-01"])
+
+    ccd("status", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n')
+
+    out = capsys.readouterr().out
+    assert "Build backend: fake-build (ready)" in out and "Run backend:   fake-run (ready)" in out
+    assert "Image 'ccd' in fake-build: id-1" in out
+    assert "Image for fake-run: rootfs is up to date" in out
+    assert "Running: ccd-app-01" in out
+
+
+def test_status_shows_when_firecracker_rootfs_is_older_than_the_docker_image(ccd, tmp_path, monkeypatch, capsys):
+    cache, toml = _firecracker_cache(tmp_path, monkeypatch)  # stamp says: built from sha256:abc
+    config = '[build]\nbackend = "fake-docker"\n\n[run]\nbackend = "firecracker"\n' + toml
+
+    ccd("status", toml=config)
+    assert "rootfs is up to date" in capsys.readouterr().out
+
+    (cache / "rootfs.image-id").write_text("sha256:old:" + (cache / "rootfs.image-id").read_text().rpartition(":")[2])
+    ccd("status", toml=config)
+    assert "built from an older image" in capsys.readouterr().out
+
+
+def test_backends_shows_what_each_can_do_and_whether_it_is_ready(ccd, monkeypatch, capsys):
+    monkeypatch.setattr("ccd.backends.firecracker.FirecrackerBackend.check_available", lambda self: (_ for _ in ()).throw(plugin_error("no KVM")))
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+
+    ccd("backends")
+
+    rows = {line.split()[0]: line for line in capsys.readouterr().out.splitlines()[1:]}
+    assert "build+run" in rows["docker"] and "ready" in rows["docker"]
+    assert rows["buildah"].split()[1] == "build"  # builds only
+    assert "not ready: no KVM" in rows["firecracker"]
+
+
+def plugin_error(message):
+    from ccd.plugin import BackendError
+
+    return BackendError(message)
+
+
+def test_images_lists_buildah_images_from_its_json_output(ccd, monkeypatch, capsys):
+    import json
+    import subprocess
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+    listing = [
+        {"id": "15388f94c27c", "names": ["localhost/ccd:latest"], "size": "3.7 GB", "createdat": "2 hours ago"},  # buildah only lists relative ages
+        {"id": "223950bd783", "names": ["localhost/ccd-vm:latest"], "size": 3730000000, "createdat": "2 hours ago"},
+        {"id": "aaaa", "names": ["docker.io/library/alpine:3.24"], "size": "8 MB", "createdat": "a month ago"},  # not ours
+        {"id": "bbbb", "names": None, "size": "1 MB", "createdat": "a month ago"},  # dangling layer
+    ]
+    now = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("ccd.plugin.utcnow", lambda: now)  # no real clock: the test must not depend on when or where it runs
+    two_hours_ago = (now - timedelta(hours=2)).isoformat()
+
+    def fake_run(cmd, **kwargs):
+        out = json.dumps({"OCIv1": {"created": two_hours_ago}}) if cmd[1] == "inspect" else json.dumps(listing)
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="WARN something")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ccd("images", "--backend", "buildah")
+
+    lines = capsys.readouterr().out.splitlines()[1:]
+    assert [line.split()[:3] for line in lines] == [["buildah", "image", "localhost/ccd:latest"], ["buildah", "image", "localhost/ccd-vm:latest"]]
+    assert "15388f94c27c" in lines[0] and "3.7GB" in lines[0] and "3.7GB" in lines[1]  # "3.7 GB" text and plain bytes look the same
+    assert "2 hours ago" in lines[0] and "2 hours ago" in lines[1]
+
+
+def test_images_tolerates_unparseable_buildah_output(ccd, monkeypatch, capsys):
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="not json", stderr=""))
+
+    code, _ = ccd("images", "--backend", "buildah")
+
+    assert code == 0 and "No build data yet" in capsys.readouterr().out
+
+
+def test_images_shows_id_size_and_age_the_same_way_for_every_backend(ccd, tmp_path, monkeypatch, capsys):
+    import json
+    import subprocess
+    from datetime import datetime, timedelta, timezone
+
+    _, toml = _firecracker_cache(tmp_path, monkeypatch)  # stamp: "sha256:abc:<assets hash>"
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+    now = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("ccd.plugin.utcnow", lambda: now)  # fixed clock, so the day arithmetic cannot depend on timezone or DST
+    docker_inspect = [{"Id": "sha256:f86a9d67e2ce" + "0" * 52, "RepoTags": ["ccd:latest"], "Size": 3_720_000_000, "Created": (now - timedelta(days=3, hours=1)).strftime("%Y-%m-%dT%H:%M:%S.123456789Z")}]
+    old = now - timedelta(days=30)
+    buildah_list = [{"id": "15388f94c27c", "names": ["localhost/ccd:latest"], "size": "3.72 GB", "createdat": "a month ago"}]
+    buildah_inspect = {"OCIv1": {"created": old.isoformat()}}
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["docker", "image", "ls"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="ccd:latest\n", stderr="")
+        out = {"docker": json.dumps(docker_inspect), "buildah": json.dumps(buildah_inspect if cmd[1] == "inspect" else buildah_list)}.get(cmd[0], "")
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ccd("images", toml=toml)
+
+    rows = {line.split()[0]: line.split() for line in capsys.readouterr().out.splitlines()[1:] if line.split()[1] in ("image", "rootfs")}
+    assert rows["docker"][3:] == ["f86a9d67e2ce", "3.7GB", "3", "days", "ago"]  # recent: relative
+    assert rows["buildah"][3:] == ["15388f94c27c", "3.7GB", old.astimezone().strftime("%Y-%m-%d")]  # older than a week: the date
+    assert rows["firecracker"][3] == "abc"  # the same short form: no "sha256:" prefix, at most 12 characters
+
+
+def test_age_is_relative_for_a_week_then_a_date():
+    from datetime import datetime, timedelta, timezone
+
+    from ccd.plugin import format_age
+
+    now = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)  # zone-aware, so the result does not depend on the machine's timezone
+    assert format_age(now - timedelta(seconds=20), now) == "just now"
+    assert format_age(now - timedelta(minutes=1), now) == "1 minute ago"
+    assert format_age(now - timedelta(minutes=59), now) == "59 minutes ago"
+    assert format_age(now - timedelta(hours=2), now) == "2 hours ago"
+    assert format_age(now - timedelta(days=6, hours=23), now) == "6 days ago"
+    assert format_age(now - timedelta(days=7), now) == (now - timedelta(days=7)).astimezone().strftime("%Y-%m-%d")  # local date
+
+
+def test_firecracker_run_logs_which_image_the_rootfs_was_built_from(ccd, tmp_path, monkeypatch, capsys):
+    from ccd.backends import firecracker as fc
+
+    cache, toml = _firecracker_cache(tmp_path, monkeypatch)  # stamp: "sha256:abc:<assets hash>"
+    monkeypatch.setattr(fc.hostnet, "setup", lambda net: None)
+    monkeypatch.setattr(fc.hostnet, "teardown", lambda net: None)
+    monkeypatch.setattr(fc.hostnet, "host_networks", lambda: [])
+    monkeypatch.setattr(fc.microvm, "make_upper", lambda path, size: path.write_bytes(b""))
+    monkeypatch.setattr(fc.FirecrackerBackend, "_run_agent_session", staticmethod(lambda *args: None))
+    (tmp_path / "app").mkdir()
+
+    code, _ = ccd("-v", "run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", toml=toml + 'dns = ["1.1.1.1"]\n')
+
+    out = capsys.readouterr().err
+    assert code == 0
+    assert f"Rootfs: {cache / 'rootfs.squashfs'} (image abc, built just now)" in out
+    assert f"Kernel: {cache / 'vmlinux'}" in out
+
+
+def test_age_ignores_the_systems_timezone_and_dst_changes():
+    from datetime import datetime, timedelta, timezone
+
+    from ccd.plugin import format_age
+
+    created = datetime(2026, 10, 22, 18, 0, tzinfo=timezone(timedelta(hours=2)))  # 16:00 UTC, summer time
+    now = datetime(2026, 10, 25, 16, 30, tzinfo=timezone.utc)  # three days and half an hour later; the clocks went back in between
+
+    assert format_age(created, now) == "3 days ago"  # wall-clock subtraction (18:00 -> 17:30) would give 2 days
+
+
+def _podman(monkeypatch, exists=True):
+    """Make podman 'installed' and record every command it is given."""
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.check_available", lambda self: None)
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd if isinstance(cmd, list) else cmd.split())
+        return subprocess.CompletedProcess(cmd, 0 if exists or cmd[:3] != ["podman", "image", "exists"] else 1, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return commands
+
+
+def test_podman_builds_and_runs_localhost_images(ccd, tmp_path, monkeypatch):
+    commands = _podman(monkeypatch)
+    (tmp_path / "app").mkdir()
+
+    ccd("build", "--backend", "podman")
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "podman", "-u", "root", "--memory", "2g")
+
+    build = next(cmd for cmd in commands if cmd[:2] == ["podman", "build"])
+    assert build[-3:-1] == ["-t", "localhost/ccd"] or "localhost/ccd" in build  # podman needs the localhost/ prefix
+    run = next(cmd for cmd in commands if cmd[:2] == ["podman", "run"])
+    assert run[-1] == "localhost/ccd" and ["--user", "root"] == run[run.index("--user") : run.index("--user") + 2]
+    assert "2g" in run and any(arg.endswith(":/app") for arg in run)
+
+
+def test_podman_runs_an_image_built_by_buildah_without_copying_it(ccd, monkeypatch):
+    commands = _podman(monkeypatch)
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+
+    code, _ = ccd("build", toml='[build]\nbackend = "buildah"\n\n[run]\nbackend = "podman"\n')
+
+    assert code == 0
+    assert ["podman", "image", "exists", "localhost/ccd"] in commands
+    assert not any(cmd[:2] in (["buildah", "push"], ["podman", "load"]) for cmd in commands)  # same store: nothing is moved
+
+
+def test_podman_reports_a_missing_image_after_a_buildah_build(ccd, monkeypatch, capsys):
+    _podman(monkeypatch, exists=False)
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+
+    code, _ = ccd("build", toml='[build]\nbackend = "buildah"\n\n[run]\nbackend = "podman"\n')
+
+    assert code == 1 and "not in podman's storage" in capsys.readouterr().err
+
+
+def test_images_lists_an_image_once_when_buildah_and_podman_share_it(ccd, monkeypatch, capsys):
+    import json
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.check_available", lambda self: None)
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+    listing = [{"id": "15388f94c27c", "names": ["localhost/ccd:latest"], "size": "3.7 GB", "createdat": "1 hour ago"}]
+    inspect = [{"Id": "15388f94c27c" + "0" * 52, "RepoTags": ["localhost/ccd:latest"], "Size": 3_700_000_000, "Created": "2026-10-25T19:50:12Z"}]
+
+    def fake_run(cmd, **kwargs):
+        if cmd[1:3] == ["image", "ls"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="localhost/ccd:latest\n", stderr="")
+        out = json.dumps(listing if cmd[:3] == ["buildah", "images", "--json"] else inspect)
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ccd("images")
+
+    rows = [line.split() for line in capsys.readouterr().out.splitlines()[1:]]
+    assert [(row[0], row[2]) for row in rows if row[0] in ("buildah", "podman")] == [("buildah", "localhost/ccd:latest")]
+
+
+def test_podman_runs_as_container_root_with_the_image_users_home_by_default(ccd, tmp_path, monkeypatch):
+    commands = _podman(monkeypatch)
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "podman")
+
+    run = next(cmd for cmd in commands if cmd[:2] == ["podman", "run"])
+    assert ["--user", "root", "-e", "HOME=/home/user"] == run[run.index("--user") : run.index("--user") + 4]
+    assert run.index("--user") < run.index("-v") < run.index("localhost/ccd")  # run flags, then volumes, then the image
+
+
+def test_podman_user_image_setting_keeps_the_image_user(ccd, tmp_path, monkeypatch):
+    commands = _podman(monkeypatch)
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "podman", toml='[podman]\nuser = "image"\n')
+
+    run = next(cmd for cmd in commands if cmd[:2] == ["podman", "run"])
+    assert "--user" not in run and "HOME=/home/user" not in run
+
+
+def test_podman_attach_uses_the_same_user_as_run(ccd, monkeypatch):
+    commands = _podman(monkeypatch)
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.list_running", lambda self: ["ccd-app-01"])
+
+    ccd("attach", "--backend", "podman")
+
+    exec_cmd = next(cmd for cmd in commands if cmd[:2] == ["podman", "exec"])
+    assert exec_cmd == ["podman", "exec", "-it", "--user", "root", "-e", "HOME=/home/user", "ccd-app-01", "/bin/bash"]
+
+
+def test_docker_user_flags_are_unchanged(ccd, tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    commands = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: commands.append(cmd) or subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "docker")
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "docker", "-u", "root")
+
+    plain, as_root = [cmd for cmd in commands if cmd[:2] == ["docker", "run"]]
+    assert "--user" not in plain and as_root[as_root.index("--user") + 1] == "root" and "HOME=/home/user" not in as_root
+
+
+def test_command_after_double_dash_is_passed_to_the_backend(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", "-u", "root", "--", "pytest", "-q", "-k", "a b")
+
+    request = calls[0][2]
+    assert code == 0 and request.command == ["pytest", "-q", "-k", "a b"] and request.root is True  # arguments stay separate
+
+
+def test_dot_takes_a_command_too_and_without_one_the_shell_is_interactive(ccd):
+    code, calls = ccd(".", "--backend", "fake", "--home", "h", "--", "ls", "-l")
+    assert calls[0][2].command == ["ls", "-l"]
+
+    _, calls = ccd(".", "--backend", "fake", "--home", "h")
+    assert calls[1][2].command == []
+
+
+def test_exit_code_of_the_command_is_the_exit_code_of_ccd(ccd, tmp_path, monkeypatch):
+    from conftest import RecordingBackend
+
+    (tmp_path / "app").mkdir()
+    monkeypatch.setattr(RecordingBackend, "run_code", 3)
+
+    code, _ = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", "--", "false")
+
+    assert code == 3
+
+
+def test_command_banner_goes_to_stderr_so_stdout_stays_the_commands(ccd, tmp_path, capsys):
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", "--", "echo", "hi")
+    quiet = capsys.readouterr()
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake")
+    shell = capsys.readouterr()
+
+    assert "Starting container" not in quiet.out and "Starting container" in quiet.err
+    assert "Starting container" in shell.out  # the interactive shell is unchanged
+
+
+def test_double_dash_keeps_its_meaning_for_build(ccd):
+    _, calls = ccd("build", "--", "--progress=plain", toml='[run]\nbackend = "fake"\n')
+
+    assert calls[0][2].extra_args == ["--", "--progress=plain"]  # exactly what argparse handed over before commands existed
+
+
+def test_docker_runs_a_command_without_a_terminal_and_returns_its_exit_code(ccd, tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 7, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    (tmp_path / "app").mkdir()
+
+    code, _ = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "docker", "--", "pytest", "-q")
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "docker")
+
+    command_run, shell_run = [cmd for cmd in commands if cmd[:2] == ["docker", "run"]]
+    assert code == 7  # not "Container run failed": the exit code is passed through
+    assert "-i" in command_run and "-it" not in command_run and "-t" not in command_run  # pytest has no terminal on stdin
+    assert command_run[-3:] == ["ccd", "pytest", "-q"]  # image, then the command
+    assert "-it" in shell_run and shell_run[-1] == "ccd"
+
+
+def test_podman_command_runs_as_container_root_after_the_image(ccd, tmp_path, monkeypatch):
+    commands = _podman(monkeypatch)
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "podman", "--", "make", "test")
+
+    run = next(cmd for cmd in commands if cmd[:2] == ["podman", "run"])
+    assert run[-3:] == ["localhost/ccd", "make", "test"] and "--user" in run
+
+
+def test_gvisor_docker_runs_the_docker_image_with_the_runsc_runtime(ccd, tmp_path, monkeypatch):
+    import subprocess
+
+    commands = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: commands.append(cmd) or subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    for backend in ("docker.DockerBackend", "gvisor.GVisorDockerBackend"):  # the builder and the runner
+        monkeypatch.setattr(f"ccd.backends.{backend}.check_available", lambda self: None)
+    (tmp_path / "app").mkdir()
+
+    code, _ = ccd("build", toml='[build]\nbackend = "docker"\n\n[run]\nbackend = "gvisor-docker"\n')  # handed over without a copy
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "gvisor-docker", "--", "true")
+
+    run = next(cmd for cmd in commands if cmd[:2] == ["docker", "run"])
+    assert code == 0 and run[run.index("--runtime") + 1] == "runsc" and run[-2:] == ["ccd", "true"]
+
+
+def test_gvisor_podman_runs_localhost_images_with_the_runsc_runtime(ccd, tmp_path, monkeypatch):
+    commands = _podman(monkeypatch)
+    monkeypatch.setattr("ccd.backends.gvisor.GVisorPodmanBackend.check_available", lambda self: None)
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "gvisor-podman", "--", "make", "test")
+
+    run = next(cmd for cmd in commands if cmd[:2] == ["podman", "run"])
+    assert run[run.index("--runtime") + 1] == "runsc" and run[-3:] == ["localhost/ccd", "make", "test"]
+
+
+def test_gvisor_backends_are_not_ready_without_the_runsc_runtime(monkeypatch):
+    import subprocess
+
+    import pytest
+
+    from ccd.backends import gvisor
+    from ccd.plugin import BackendError
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.check_available", lambda self: None)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout='{"runc":{}}', stderr=""))
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr("os.sysconf", lambda name: 4096)  # whatever the machine running the tests has
+
+    with pytest.raises(BackendError, match="no 'runsc' runtime"):
+        gvisor.GVisorDockerBackend().check_available()
+    with pytest.raises(BackendError, match="runsc not found"):
+        gvisor.GVisorPodmanBackend().check_available()
+
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout='{"runc":{},"runsc":{}}', stderr=""))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/runsc")
+    gvisor.GVisorDockerBackend().check_available()
+    gvisor.GVisorPodmanBackend().check_available()
+
+
+def test_gvisor_backends_are_not_ready_on_a_host_with_16k_pages(monkeypatch):
+    import subprocess
+
+    import pytest
+
+    from ccd.backends import gvisor
+    from ccd.plugin import BackendError
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.check_available", lambda self: None)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout='{"runsc":{}}', stderr=""))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/runsc")
+    monkeypatch.setattr("os.sysconf", lambda name: 16384)  # Raspberry Pi 5's default kernel
+
+    for backend in (gvisor.GVisorDockerBackend, gvisor.GVisorPodmanBackend):
+        with pytest.raises(BackendError, match="4096-byte pages, this one has 16384"):
+            backend().check_available()
+
+
+def _mounts(calls):
+    return {(str(m.host), str(m.container)): m for m in calls[0][2].mounts}
+
+
+def test_default_mounts_come_from_the_feature_manifests(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+    home = tmp_path / "h"
+
+    code, calls = ccd("run", "app", "--home", str(home), "--backend", "fake")
+
+    assert code == 0
+    containers = sorted(c for _, c in _mounts(calls))
+    assert containers == sorted(["/app"] + [f"/home/user/{n}" for n in (".claude", ".claude.json", ".gemini", ".codex", ".copilot", ".pi")])
+    assert (home / ".claude.json").is_file()
+
+
+def test_features_selection_mounts_and_creates_only_those(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+    home = tmp_path / "h"
+
+    code, calls = ccd("run", "app", "--home", str(home), "--backend", "fake", toml='[run]\nfeatures = ["codex"]\n')
+
+    assert code == 0
+    assert sorted(c for _, c in _mounts(calls)) == ["/app", "/home/user/.codex"]
+    assert (home / ".codex").is_dir() and not (home / ".claude").exists()
+
+
+def test_unknown_feature_selection_fails(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml='[run]\nfeatures = ["nope"]\n')
+
+    assert code != 0 and not calls
+
+
+def test_feature_override_replaces_its_mounts_and_project_features_bring_their_own(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+    real = tmp_path / "real-claude"
+    real.mkdir()
+    mine = tmp_path / ".ccd" / "features" / "mine"
+    mine.mkdir(parents=True)
+    (mine / "feature.toml").write_text('version = false\n[install]\ncommand = "true"\n[[mounts]]\nhost = "{home}/.mine"\ncontainer = "~/.mine"\n')
+    toml = f"""
+[run]
+features = ["claude", "mine"]
+[features.claude]
+mounts = [{{ host = "{real}", container = "~/.claude", readonly = true }}]
+"""
+    home = tmp_path / "h"
+
+    code, calls = ccd("run", "app", "--home", str(home), "--backend", "fake", toml=toml)
+
+    assert code == 0
+    mounts = _mounts(calls)
+    assert sorted(c for _, c in mounts) == ["/app", "/home/user/.claude", "/home/user/.mine"]
+    assert mounts[(str(real.resolve()), "/home/user/.claude")].readonly
+    assert (home / ".mine").is_dir() and not (home / ".claude").exists()
+
+
+def test_override_of_an_unknown_feature_fails(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml='[features.ghost]\nmounts = []\n')
+
+    assert code != 0 and not calls
+
+
+def test_run_mount_with_the_same_container_path_replaces_a_feature_mount(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    toml = f'[[run.mounts]]\nhost = "{other}"\ncontainer = "/home/user/.gemini"\n'
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml=toml)
+
+    assert code == 0
+    gemini = [h for h, c in _mounts(calls) if c == "/home/user/.gemini"]
+    assert gemini == [str(other.resolve())]
+
+
+def test_invalid_mount_type_and_missing_keys_fail(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+    for toml in ('[[run.mounts]]\nhost = "/x"\ncontainer = "/y"\ntype = "dir"\n', '[[run.mounts]]\nhost = "/x"\n'):
+        code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml=toml)
+        assert code != 0 and not calls
+
+
+def test_optional_missing_mount_is_skipped_and_required_folder_is_created(ccd, tmp_path):
+    (tmp_path / "app").mkdir()
+    optional = tmp_path / "optional"
+    required = tmp_path / "required"
+    toml = (
+        f'[[run.mounts]]\nhost = "{optional}"\ncontainer = "/opt"\noptional = true\n'
+        f'[[run.mounts]]\nhost = "{required}"\ncontainer = "/req"\n'
+    )
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", toml=toml)
+
+    assert code == 0
+    containers = {c for _, c in _mounts(calls)}
+    assert "/opt" not in containers and "/req" in containers
+    assert required.is_dir() and not optional.exists()
+
+
+def _build_command(ccd, *args, toml=""):
+    """The docker build command line for `ccd build` on the (fake) docker backend, and the Dockerfile it was given."""
+    import shlex
+    import subprocess
+    from unittest import mock
+
+    captured = {}
+
+    def fake_run(command, *a, **kw):
+        captured["command"] = shlex.split(command) if isinstance(command, str) else command
+        captured["dockerfile"] = Path(captured["command"][captured["command"].index("-f") + 1]).read_text()
+        return subprocess.CompletedProcess(command, 0)
+
+    with mock.patch("subprocess.run", fake_run), mock.patch("ccd.backends.docker.DockerBackend.check_available", lambda self: None):
+        code, _ = ccd("build", *args, toml='[run]\nbackend = "docker"\n' + toml)
+    return code, captured
+
+
+def test_build_renders_the_selected_features_into_the_dockerfile(ccd):
+    code, built = _build_command(ccd, "--without", "rust,gemini")
+
+    assert code == 0
+    assert "claude --version" in built["dockerfile"] and "rustup" not in built["dockerfile"] and "GEMINI_VERSION" not in built["dockerfile"]
+    assert built["command"][-1] != "."  # the staged build context, not the repo root
+
+
+def test_build_with_installs_only_those_features_and_what_they_require(ccd):
+    _, built = _build_command(ccd, "--with", "codex")
+
+    names = [line.split(": ")[1].split(" ")[0] for line in built["dockerfile"].splitlines() if line.startswith("# feature: ")]
+    assert names == ["nvm", "node", "pnpm", "codex"]
+
+
+def test_build_excluding_a_required_feature_fails_naming_both(ccd, capsys):
+    code, _ = _build_command(ccd, "--without", "node")
+
+    assert code == 1 and "cannot exclude 'node': required by" in capsys.readouterr().err
+
+
+def test_version_flags_and_config_become_build_args(ccd):
+    _, built = _build_command(ccd, "--claude-version", "2.0.1", "--node-version", "22.1.0", "--npm-version", "11.0.0", toml='[versions]\nuv = "0.5.0"\n')
+
+    args = built["command"]
+    values = {args[i + 1] for i, a in enumerate(args) if a == "--build-arg"}
+    assert {"CLAUDE_VERSION=2.0.1", "NODE_VERSION=22.1.0", "NPM_VERSION=11.0.0", "UV_VERSION=0.5.0"} <= values
+
+
+def test_unknown_version_in_config_fails(ccd, capsys):
+    code, _ = _build_command(ccd, toml='[versions]\nnope = "1"\n')
+
+    assert code == 1 and "Unknown version(s)" in capsys.readouterr().err
+
+
+def test_print_dockerfile_prints_without_building(ccd, capsys):
+    code, calls = ccd("build", "--print-dockerfile", "--with", "uv", toml='[run]\nbackend = "fake"\n')
+
+    out = capsys.readouterr().out
+    assert code == 0 and not calls
+    assert out.startswith("# syntax=docker/dockerfile:1") and "# feature: uv" in out and "claude" not in out
+
+
+def test_project_features_can_add_to_the_image(ccd, tmp_path):
+    (tmp_path / ".ccd" / "features" / "hello").mkdir(parents=True)
+    (tmp_path / ".ccd" / "features" / "hello" / "feature.toml").write_text('version = false\n[install]\ncommand = "echo hello"\n')
+
+    # the helper rewrites ccd.toml but not .ccd/, which stays in the working directory
+    _, built = _build_command(ccd, "--with", "hello")
+
+    assert "# feature: hello" in built["dockerfile"] and "echo hello" in built["dockerfile"]
+
+
+def test_features_command_lists_bundled_and_project_features(ccd, tmp_path, capsys):
+    (tmp_path / ".ccd" / "features" / "hello").mkdir(parents=True)
+    (tmp_path / ".ccd" / "features" / "hello" / "feature.toml").write_text('version = false\n[install]\ncommand = "true"\n')
+
+    code, _ = ccd("features")
+
+    rows = {line.split()[0]: line.split() for line in capsys.readouterr().out.splitlines()[1:]}
+    assert code == 0
+    assert rows["claude"][1:4] == ["yes", "pnpm", "claude=latest"] and rows["jules"][1] == "no"
+    assert rows["node"][3] == "node=24.15.0" and rows["hello"][-1] == "local"
+
+
+def test_a_broken_feature_manifest_stops_ccd_with_its_file_name(ccd, tmp_path, capsys):
+    (tmp_path / ".ccd" / "features" / "bad").mkdir(parents=True)
+    (tmp_path / ".ccd" / "features" / "bad" / "feature.toml").write_text('colour = "red"\n')
+
+    code, _ = ccd("features")
+
+    assert code == 1 and "unknown key(s): colour" in capsys.readouterr().err
+
+
+def test_audit_ignore_components_reach_the_install_step(ccd):
+    _, built = _build_command(ccd, "--npm-audit-ignore-components", "pi,gemini")
+
+    args = built["command"]
+    assert "NPM_AUDIT_IGNORE_COMPONENTS=gemini,pi" in {args[i + 1] for i, a in enumerate(args) if a == "--build-arg"}
+    assert "ARG NPM_AUDIT_IGNORE_COMPONENTS=" in built["dockerfile"]
+    assert 'export NPM_AUDIT_IGNORE_COMPONENTS="${NPM_AUDIT_IGNORE_COMPONENTS}"' in built["dockerfile"]
+
+
+def _docker_commands(monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    commands = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: commands.append(cmd) or subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    return commands
+
+
+def _image_of_run(commands, cli="docker"):
+    run = next(cmd for cmd in commands if cmd[:2] == [cli, "run"])
+    return run[-1]
+
+
+def test_the_default_tag_changes_no_image_reference(ccd, tmp_path, monkeypatch):
+    commands = _docker_commands(monkeypatch)
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "docker")
+    _, built = _build_command(ccd)
+
+    assert _image_of_run(commands) == "ccd"
+    assert built["command"][built["command"].index("-t") + 1] == "ccd"
+
+
+def test_build_tag_names_the_image_and_leaves_latest_alone(ccd):
+    _, built = _build_command(ccd, "--tag", "next")
+
+    assert built["command"][built["command"].index("-t") + 1] == "ccd:next"
+
+
+def test_run_tag_runs_that_tag_on_docker_and_podman(ccd, tmp_path, monkeypatch):
+    commands = _docker_commands(monkeypatch)
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.check_available", lambda self: None)
+    (tmp_path / "app").mkdir()
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "docker", "--tag", "next")
+    ccd(".", "--home", str(tmp_path / "h"), "--backend", "podman", "--tag", "v2")
+
+    assert _image_of_run(commands) == "ccd:next"
+    assert _image_of_run(commands, "podman") == "localhost/ccd:v2"
+
+
+def test_tag_can_come_from_the_config_and_the_flag_wins(ccd, tmp_path, monkeypatch):
+    commands = _docker_commands(monkeypatch)
+    (tmp_path / "app").mkdir()
+    toml = '[build]\ntag = "stable"\n[run]\ntag = "stable"\nbackend = "docker"\n'
+
+    ccd("run", "app", "--home", str(tmp_path / "h"), toml=toml)
+    ccd("run", "app", "--home", str(tmp_path / "h"), "--tag", "next", toml=toml)
+    _, built = _build_command(ccd, toml='[build]\ntag = "stable"\n')
+
+    runs = [cmd[-1] for cmd in commands if cmd[:2] == ["docker", "run"]]
+    assert runs == ["ccd:stable", "ccd:next"]
+    assert built["command"][built["command"].index("-t") + 1] == "ccd:stable"
+
+
+@pytest.mark.parametrize("tag", ["-bad", ".bad", "has space", "a/b", "x" * 129])
+def test_invalid_tags_are_rejected(ccd, tmp_path, capsys, tag):
+    (tmp_path / "app").mkdir()
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "fake", f"--tag={tag}")
+
+    assert code == 1 and not calls and "Invalid image tag" in capsys.readouterr().err
+    code, calls = ccd("build", f"--tag={tag}", toml='[run]\nbackend = "fake"\n')
+    assert code == 1 and not calls
+
+
+def test_firecracker_only_supports_the_default_tag(ccd, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("ccd.backends.firecracker.FirecrackerBackend.check_available", lambda self: None)
+    (tmp_path / "app").mkdir()
+
+    code, calls = ccd("run", "app", "--home", str(tmp_path / "h"), "--backend", "firecracker", "--tag", "next")
+    assert code == 1 and not calls and "keeps a single image" in capsys.readouterr().err
+
+    capsys.readouterr()
+    code, calls = ccd("build", "--tag", "next", toml='[build]\nbackend = "fake-build"\n[run]\nbackend = "firecracker"\n')
+    assert code == 0 and [(b, op) for b, op, _ in calls] == [("fake-build", "build")]  # built, but not handed to the single-image backend
+    assert "Not importing ccd:next into firecracker (it only runs 'latest')" in capsys.readouterr().err
+
+
+def test_tagged_build_is_not_imported_when_the_run_backend_is_unavailable(ccd, capsys):
+    code, calls = ccd("build", "--tag", "next", toml='[build]\nbackend = "fake-build"\n[run]\nbackend = "firecracker"\n')  # not installed here
+
+    assert code == 0 and [(b, op) for b, op, _ in calls] == [("fake-build", "build")]
+    assert "Not importing ccd:next into firecracker" in capsys.readouterr().err
+
+
+def test_default_tag_build_is_still_handed_over(ccd):
+    _, calls = ccd("build", toml='[build]\nbackend = "fake-build"\n[run]\nbackend = "fake-run"\n')
+
+    assert ("fake-run", "import") in [(b, op) for b, op, _ in calls]
+
+
+def test_tagged_build_is_handed_over_to_a_run_backend_that_supports_tags(ccd):
+    _, calls = ccd("build", "--tag", "next", toml='[build]\nbackend = "fake-build"\n[run]\nbackend = "fake-run"\n')
+
+    assert ("fake-run", "import") in [(b, op) for b, op, _ in calls]
+
+
+def test_promoting_to_latest_hands_the_image_to_the_run_backend(ccd):
+    _, calls = ccd("tag", "next", "latest", toml='[build]\nbackend = "fake-build"\n[run]\nbackend = "fake-run"\n')
+    assert [(b, op) for b, op, _ in calls if op != "release"] == [("fake-build", "tag"), ("fake-build", "provide"), ("fake-run", "import")]
+    assert calls[0][2] == ("next", "latest")
+
+    ccd("tag", "latest", "previous", toml='[build]\nbackend = "fake-build"\n[run]\nbackend = "fake-run"\n')  # a backup moves nothing
+
+
+def test_build_tag_reaches_the_build_request(ccd):
+    code, calls = ccd("build", "--tag", "next", toml='[build]\nbackend = "fake-build"\n\n[run]\nbackend = "fake-run"\n')
+
+    assert code == 0
+    (request,) = [request for _, op, request in calls if op == "build"]
+    assert request.tag == "next" and request.image_name == "ccd"
+
+
+def test_status_shows_the_requested_tag(ccd, capsys):
+    ccd("status", "--tag", "next", toml='[run]\nbackend = "fake"\n')
+
+    assert "Image 'ccd:next' in fake: id-1" in capsys.readouterr().out
+
+
+def test_images_lists_every_tag_of_the_docker_image(ccd, monkeypatch, capsys):
+    import json
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    entries = [
+        {"Id": "sha256:" + "a" * 64, "RepoTags": ["ccd:latest"], "Size": 3_000_000_000, "Created": "2026-10-25T19:50:12Z"},
+        {"Id": "sha256:" + "b" * 64, "RepoTags": ["ccd:next"], "Size": 3_100_000_000, "Created": "2026-10-27T08:00:00Z"},
+    ]
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd[1:3] == ["image", "ls"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="ccd:next\nccd:latest\n<none>:<none>\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(entries), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ccd("images", "--backend", "docker")
+
+    rows = [line.split() for line in capsys.readouterr().out.splitlines()[1:]]
+    assert [(row[0], row[2], row[3]) for row in rows] == [("docker", "ccd:latest", "aaaaaaaaaaaa"), ("docker", "ccd:next", "bbbbbbbbbbbb")]
+    listing = next(cmd for cmd in commands if cmd[1:3] == ["image", "ls"])
+    assert listing.count("--filter") == 2 and "reference=ccd" in listing and "reference=ccd-vm" in listing
+    assert ["docker", "image", "inspect", "ccd:latest", "ccd:next"] in commands  # sorted, without the untagged entry
+
+
+def test_images_lists_each_tag_of_one_image_separately(ccd, monkeypatch, capsys):
+    import json
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    shared = {"Id": "sha256:" + "7" * 64, "RepoTags": ["ccd:latest", "ccd:next", "other:tag"], "Size": 3_600_000_000, "Created": "2026-10-27T08:00:00Z"}
+
+    def fake_run(cmd, **kwargs):
+        out = "ccd:latest\nccd:next\n" if cmd[1:3] == ["image", "ls"] else json.dumps([shared])
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ccd("images", "--backend", "docker")
+
+    rows = [line.split() for line in capsys.readouterr().out.splitlines()[1:]]
+    assert [(row[2], row[3]) for row in rows] == [("ccd:latest", "777777777777"), ("ccd:next", "777777777777")]  # not other:tag
+
+
+def test_images_with_nothing_built_lists_nothing(ccd, monkeypatch, capsys):
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+
+    ccd("images", "--backend", "docker")
+
+    assert "No build data yet" in capsys.readouterr().out
+
+
+def test_tag_command_tags_on_docker_podman_and_buildah(ccd, monkeypatch, capsys):
+    commands = _docker_commands(monkeypatch)
+    monkeypatch.setattr("ccd.backends.podman.PodmanBackend.check_available", lambda self: None)
+    monkeypatch.setattr("ccd.backends.buildah.BuildahBackend.check_available", lambda self: None)
+
+    ccd("tag", "next", "latest", toml='[run]\nbackend = "docker"\n')
+    ccd("tag", "latest", "previous", toml='[run]\nbackend = "podman"\n')
+    ccd("tag", "next", "stable", toml='[build]\nbackend = "buildah"\n[run]\nbackend = "fake"\n')
+
+    assert ["docker", "tag", "ccd:next", "ccd"] in commands
+    assert ["podman", "tag", "localhost/ccd", "localhost/ccd:previous"] in commands
+    assert ["buildah", "tag", "localhost/ccd:next", "localhost/ccd:stable"] in commands
+    assert "Tagged ccd:next as ccd in docker" in capsys.readouterr().out
+
+
+def test_tag_command_reports_a_failing_tool(ccd, monkeypatch, capsys):
+    import subprocess
+
+    monkeypatch.setattr("ccd.backends.docker.DockerBackend.check_available", lambda self: None)
+
+    def fail(cmd, **kwargs):
+        raise subprocess.CalledProcessError(1, cmd, stderr="Error response from daemon: No such image: ccd:ghost\n")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+
+    code, _ = ccd("tag", "ghost", "latest", toml='[run]\nbackend = "docker"\n')
+
+    assert code == 1 and "No such image: ccd:ghost" in capsys.readouterr().err
+
+
+def test_tag_command_rejects_bad_tags_and_backends_that_keep_one_image(ccd, monkeypatch, capsys):
+    monkeypatch.setattr("ccd.backends.firecracker.FirecrackerBackend.check_available", lambda self: None)
+
+    code, _ = ccd("tag", "next", "has space", toml='[run]\nbackend = "fake"\n')
+    assert code == 1 and "Invalid image tag" in capsys.readouterr().err
+
+    code, _ = ccd("tag", "next", "latest", toml='[build]\nbackend = "firecracker"\n[run]\nbackend = "firecracker"\n')
+    assert code == 1 and "keeps a single image" in capsys.readouterr().err
+
+
+def test_metadata_lists_the_features_of_the_built_image(ccd, capsys):
+    code, calls = ccd("metadata", "--tag", "next", toml='[build]\nbackend = "fake"\n')
+
+    out = capsys.readouterr().out.splitlines()
+    assert code == 0 and calls == [("fake", "read", ("next", "/metadata/installed.jsonl"))]
+    assert out[0].split() == ["FEATURE", "RESOLVED", "SOURCE"]
+    assert out[1].split(None, 1)[0] == "go" and "go version go1.24.0 linux/arm64" in out[1]
+    assert out[2].split() == ["local-claude", "-", "bundled"]
+
+
+def test_metadata_json_prints_the_raw_list(ccd, capsys):
+    ccd("metadata", "--json", toml='[build]\nbackend = "fake"\n')
+
+    out = capsys.readouterr().out
+    assert out.startswith('{"name": "go"') and '"install": ["x"]' in out
+
+
+def test_docker_reads_a_file_from_the_image_without_its_entrypoint(monkeypatch):
+    from ccd.backends.docker import DockerBackend
+
+    seen = []
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: seen.append(cmd) or __import__("subprocess").CompletedProcess(cmd, 0, "data", ""))
+
+    assert DockerBackend().read_image_file("ccd", "next", "/metadata/installed.jsonl", {}) == "data"
+    assert seen[0][1:5] == ["run", "--rm", "--entrypoint", "cat"] and seen[0][-2:] == ["ccd:next", "/metadata/installed.jsonl"]
+
+
+def _buildah_build_command(tmp_path, monkeypatch, options=None, extra_args=()):
+    import subprocess
+
+    from ccd.backends.buildah import BuildahBackend
+    from ccd.config import BuildConfig
+    from ccd.plugin import BuildRequest
+
+    commands = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: commands.append(cmd) or subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+    request = BuildRequest(image_name="ccd", config=BuildConfig(), extra_args=list(extra_args), options=options or {}, dockerfile=tmp_path / "Dockerfile", context=tmp_path)
+    BuildahBackend().build(request)
+    return commands[-1]
+
+
+def test_buildah_builds_four_stages_at_once_by_default(tmp_path, monkeypatch):
+    cmd = _buildah_build_command(tmp_path, monkeypatch)
+
+    assert cmd[cmd.index("--jobs") + 1] == "4"
+
+
+def test_buildah_jobs_can_be_set_in_the_config_and_on_the_command_line(tmp_path, monkeypatch):
+    configured = _buildah_build_command(tmp_path, monkeypatch, options={"jobs": 2})
+    unlimited = _buildah_build_command(tmp_path, monkeypatch, options={"jobs": 0})
+    flagged = _buildah_build_command(tmp_path, monkeypatch, options={"jobs": 2}, extra_args=["--jobs", "1"])
+
+    assert configured[configured.index("--jobs") + 1] == "2" and unlimited[unlimited.index("--jobs") + 1] == "0"
+    assert flagged.count("--jobs") == 1 and flagged[flagged.index("--jobs") + 1] == "1"
+
+
+@pytest.mark.parametrize("jobs", [-1, "4", True, 1.5])
+def test_buildah_rejects_a_bad_jobs_setting(tmp_path, monkeypatch, jobs):
+    from ccd.plugin import BackendError
+
+    with pytest.raises(BackendError, match="jobs must be a whole number"):
+        _buildah_build_command(tmp_path, monkeypatch, options={"jobs": jobs})
+
+
+def test_sequential_mode_builds_everything_in_one_stage(ccd, capsys):
+    ccd("build", "--print-dockerfile", "--with", "claude", toml='[run]\nbackend = "fake"\n')
+    parallel = capsys.readouterr().out
+    ccd("build", "--print-dockerfile", "--with", "claude", "--mode", "sequential", toml='[run]\nbackend = "fake"\n')
+    sequential = capsys.readouterr().out
+
+    assert "AS f-claude" in parallel and "--from=f-claude" in parallel
+    assert "AS f-" not in sequential and "--from=" not in sequential
+    assert sequential.index("# feature: nvm") < sequential.index("# feature: node") < sequential.index("# feature: pnpm") < sequential.index("# feature: claude") < sequential.index("FROM pre AS final")
+
+
+def test_build_mode_can_come_from_the_config_and_the_flag_wins(ccd, capsys):
+    toml = '[build]\nmode = "sequential"\n[run]\nbackend = "fake"\n'
+    ccd("build", "--print-dockerfile", "--with", "go", toml=toml)
+    configured = capsys.readouterr().out
+    ccd("build", "--print-dockerfile", "--with", "go", "--mode", "parallel", toml=toml)
+    flagged = capsys.readouterr().out
+
+    assert "AS f-go" not in configured and "AS f-go" in flagged
+
+
+def test_an_unknown_build_mode_is_refused(ccd, caplog):
+    code, calls = ccd("build", "--print-dockerfile", toml='[build]\nmode = "fast"\n[run]\nbackend = "fake"\n')
+
+    assert code != 0 and not calls
+    assert "Invalid build mode 'fast'" in caplog.text
+
+
+def test_flatten_can_come_from_the_flag_or_the_config(ccd, capsys):
+    ccd("build", "--print-dockerfile", "--with", "go", toml='[run]\nbackend = "fake"\n')
+    default = capsys.readouterr().out
+    ccd("build", "--print-dockerfile", "--with", "go", "--flatten", toml='[run]\nbackend = "fake"\n')
+    flagged = capsys.readouterr().out
+    ccd("build", "--print-dockerfile", "--with", "go", toml='[build]\nflatten = true\n[run]\nbackend = "fake"\n')
+    configured = capsys.readouterr().out
+
+    assert "AS flat" not in default and "FROM scratch AS flat" in flagged and flagged == configured
+
+
+def test_print_plan_shows_where_each_feature_is_installed_and_prints_no_dockerfile(ccd, capsys):
+    code, calls = ccd("build", "--print-plan", "--with", "claude,go", toml='[run]\nbackend = "fake"\n')
+
+    out = capsys.readouterr().out.splitlines()
+    assert code == 0 and not calls and out[0].split() == ["FEATURE", "STAGE", "BUILT", "ON"]
+    rows = {line.split()[0]: line.split()[1:] for line in out[1:]}
+    assert rows["claude"] == ["f-claude", "f-pnpm"] and rows["go"] == ["f-go", "pre"] and rows["nvm"] == ["f-nvm", "pre"]
+    assert not any(line.startswith("FROM") for line in out)
+
+
+def test_a_project_feature_that_requires_a_bundled_one_is_installed_in_post(ccd, tmp_path, capsys):
+    (tmp_path / ".ccd" / "features" / "mytool").mkdir(parents=True)
+    (tmp_path / ".ccd" / "features" / "mytool" / "feature.toml").write_text('requires = ["pnpm"]\nversion = false\n[install]\ncommand = "echo mytool"\n')
+
+    code, _ = ccd("build", "--print-plan", "--with", "mytool", toml='[run]\nbackend = "fake"\n')
+
+    rows = {line.split()[0]: line.split()[1:] for line in capsys.readouterr().out.splitlines()[1:]}
+    assert code == 0 and rows["mytool"] == ["post", "final"] and rows["pnpm"] == ["f-pnpm", "f-node"]

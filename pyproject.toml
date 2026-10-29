@@ -13,6 +13,11 @@ ccd = "ccd.ccd:main"
 
 [project.entry-points."ccd.backends"]
 docker = "ccd.backends.docker:DockerBackend"
+buildah = "ccd.backends.buildah:BuildahBackend"
+podman = "ccd.backends.podman:PodmanBackend"
+firecracker = "ccd.backends.firecracker:FirecrackerBackend"
+gvisor-docker = "ccd.backends.gvisor:GVisorDockerBackend"
+gvisor-podman = "ccd.backends.gvisor:GVisorPodmanBackend"
 
 
 [build-system]
@@ -24,3 +29,12 @@ line-length=160
 
 [tool.uv]
 exclude-newer = "1 week"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

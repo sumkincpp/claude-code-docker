@@ -1,7 +1,15 @@
 [build]
-# Backend that builds the image (default: the [run] backend). Building with docker and
-# running on firecracker hands the image over automatically.
+# Backend that builds the image: docker or buildah (default: the [run] backend). Building with another backend than the one that runs
+# the image hands it over automatically, e.g. docker or buildah -> firecracker.
 backend = "docker"
+
+# How the image is built: "parallel" (default) builds one stage per feature, independent ones at the same time, and copies the results
+# together at the end; "sequential" installs every feature in order in a single stage. ccd build --mode overrides it for one build.
+# mode = "parallel"
+
+# Make the image a single layer: the finished image is copied into a stage that starts from scratch. That is a second full copy of
+# everything (minutes on slow storage) and it rebuilds on every change, so it is off by default. ccd build --flatten does it for one build.
+# flatten = false
 
 # Minimum release age in days for npm packages resolved by tag (e.g. latest)
 npm_min_release_age_days = 2
@@ -17,7 +25,7 @@ npm_audit_force_fix_components = ["pi"]
 
 # Include only these features (mutually exclusive with without_features)
 # with_features = ["claude", "codex", "gemini", "opencode", "copilot", "jules", "pi", "rust"]
-with_features = ["codex", "claude", "pi", "copilot", "rust"]
+with_features = ["go", "codex", "claude", "pi", "copilot", "rust", "uv"]
 #
 # Exclude these features
 # without_features = []
@@ -28,6 +36,7 @@ with_features = ["codex", "claude", "pi", "copilot", "rust"]
 # npm = "11.3.0"
 # uv = "0.7.2"
 # rustup = "1.28.2"
+# go = "1.24.0"
 # claude = "latest"
 # codex = "latest"
 # gemini = "latest"
@@ -41,6 +50,9 @@ with_features = ["codex", "claude", "pi", "copilot", "rust"]
 # CLI flags (--memory, --cpus) override these values.
 # ---------------------------------------------------------------------------
 [run]
+
+# Runtime backend plugin
+backend = "firecracker"
 
 # memory = "4g"
 # cpus  = "4"
@@ -66,3 +78,29 @@ optional  = true
 # container = "/home/user/.ssh"
 # readonly  = true
 # optional  = true
+
+# ---------------------------------------------------------------------------
+# Firecracker backend options (used when backend = "firecracker")
+# ---------------------------------------------------------------------------
+[firecracker]
+# Firecracker CI guest kernel (6.1); {arch} becomes x86_64 or aarch64 for the host: ext4, virtio-mmio blk/net, NFSv4 client, overlayfs, user namespaces built in.
+# The dated folder rotates. Other kernels: https://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/
+# (pick the newest folder, then <arch>/vmlinux-*) and https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md
+kernel_url  = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20261023-dd7c24b0d165-0/{arch}/vmlinux-6.1.188"
+# cache_dir   = "~/.cache/ccd/firecracker"
+# Range for the per-VM /30 networks (default 10.111.111.0/24). Blocks overlapping a route the host already has are skipped;
+# avoid 172.17-172.31, which Docker uses for its networks.
+# subnet      = "10.111.111.0/24"
+
+# ---------------------------------------------------------------------------
+# Buildah backend options (used when backend = "buildah")
+# ---------------------------------------------------------------------------
+# [buildah]
+# Stages built at once (default 4; buildah's own default is 1, 0 = no limit). ccd build --jobs N overrides it for one build.
+# jobs = 4
+
+# ---------------------------------------------------------------------------
+# Podman backend options (used when backend = "podman")
+# ---------------------------------------------------------------------------
+# [podman]
+# user = "root"   # container root = your host user in rootless podman (mounts are writable); "image" runs the image's own user

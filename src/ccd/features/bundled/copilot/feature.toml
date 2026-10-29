@@ -1,0 +1,13 @@
+description = "GitHub Copilot CLI"
+paths = ["~/.local/share/ccd/pnpm-installs/copilot", "~/.local/bin/copilot", "/metadata/pnpm-cli-resolution"]
+requires = ["pnpm"]
+
+[install]
+command = "ccd-npm-install copilot @github/copilot --binary copilot --version \"$COPILOT_VERSION\""
+
+[verify]
+command = "copilot --version"
+
+[[mounts]]
+host = "{home}/.copilot"
+container = "~/.copilot"

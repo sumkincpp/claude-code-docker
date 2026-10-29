@@ -1,0 +1,10 @@
+description = "Google Jules CLI"
+paths = ["~/.local/share/ccd/pnpm-installs/jules", "~/.local/bin/jules", "/metadata/pnpm-cli-resolution"]
+requires = ["pnpm"]
+default = false
+
+[install]
+command = "ccd-npm-install jules @google/jules --binary jules --version \"$JULES_VERSION\""
+
+[verify]
+command = "jules --version"

@@ -1,0 +1,8 @@
+description = "local-claude, a wrapper that runs Claude Code against a local Ollama"
+paths = ["~/.local/bin/local-claude"]
+requires = ["claude"]
+order = 95
+version = false
+
+[install]
+command = 'install -m 755 "$CCD_FEATURE_DIR/local-claude" /home/user/.local/bin/local-claude'

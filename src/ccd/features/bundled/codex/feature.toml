@@ -1,0 +1,13 @@
+description = "OpenAI Codex CLI"
+paths = ["~/.local/share/ccd/pnpm-installs/codex", "~/.local/bin/codex", "/metadata/pnpm-cli-resolution"]
+requires = ["pnpm"]
+
+[install]
+command = "ccd-npm-install codex @openai/codex --binary codex --version \"$CODEX_VERSION\""
+
+[verify]
+command = "codex --version"
+
+[[mounts]]
+host = "{home}/.codex"
+container = "~/.codex"

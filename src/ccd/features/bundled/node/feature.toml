@@ -1,0 +1,17 @@
+description = "Node.js, installed with nvm"
+paths = ["~/.nvm"]
+requires = ["nvm"]
+order = 11
+
+# https://nodejs.org/en/about/previous-releases
+# 22 - Maintenance LTS  24 - Active LTS
+version = "24.15.0"
+
+[env]
+PATH = "/home/user/.nvm/versions/node/v${NODE_VERSION}/bin:${PATH}"
+
+[install]
+command = '''. "$NVM_DIR/nvm.sh" && NVM_NODEJS_ORG_MIRROR=https://unofficial-builds.nodejs.org/download/release nvm install "$NODE_VERSION"'''
+
+[verify]
+command = "node -v"

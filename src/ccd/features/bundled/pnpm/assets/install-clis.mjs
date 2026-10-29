@@ -7,60 +7,54 @@ import { fetchRegistryData, resolveVersion } from "./resolve-version.mjs";
 
 const INSTALL_ROOT = process.env.PNPM_CLI_INSTALL_ROOT ?? path.join(os.homedir(), ".local/share/ccd/pnpm-installs");
 const METADATA_ROOT = process.env.PNPM_CLI_METADATA_ROOT ?? "/metadata";
-const SUMMARY_FILE = path.join(METADATA_ROOT, "pnpm-cli-resolution.txt");
-const JSONL_FILE = path.join(METADATA_ROOT, "pnpm-cli-resolution.jsonl");
-const RELEASE_AGE_DAYS = parseInt(process.env.PNPM_CLI_MIN_RELEASE_AGE_DAYS ?? "7", 10);
+// One file pair per component: CLIs installed in separate build stages must not write the same file
+const RESOLUTION_DIR = path.join(METADATA_ROOT, "pnpm-cli-resolution");
+const RELEASE_AGE_DAYS = parseInt(process.env.NPM_CLI_MIN_RELEASE_AGE_DAYS ?? "7", 10);
 const RELEASE_AGE_MINUTES = RELEASE_AGE_DAYS * 24 * 60;
 const PNPM_VERSION = execSync("pnpm --version", { encoding: "utf8" }).trim();
 const PNPM_MAJOR = parseInt(PNPM_VERSION.split(".")[0], 10);
 const AUDIT_IGNORE_CVES = (process.env.PNPM_AUDIT_IGNORE_CVES ?? "").split(",").map(s => s.trim()).filter(Boolean);
-const AUDIT_FORCE_FIX_COMPONENTS = (process.env.PNPM_AUDIT_FORCE_FIX_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
-const MIN_RELEASE_AGE_IGNORE_COMPONENTS = (process.env.PNPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
+const AUDIT_IGNORE_COMPONENTS = (process.env.NPM_AUDIT_IGNORE_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
+const AUDIT_FORCE_FIX_COMPONENTS = (process.env.NPM_AUDIT_FORCE_FIX_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
+const MIN_RELEASE_AGE_IGNORE_COMPONENTS = (process.env.NPM_CLI_MIN_RELEASE_AGE_IGNORE_COMPONENTS ?? "").split(",").map(s => s.trim()).filter(Boolean);
 const BIN_DIR = path.join(os.homedir(), ".local/bin");
 const PNPM_STORE_DIR = process.env.PNPM_STORE_DIR ?? path.join(os.homedir(), ".pnpm-store");
 const NOW = Date.now();
-// When set, only install this one component (used for per-layer Docker caching).
-const INSTALL_COMPONENT = process.env.INSTALL_COMPONENT ?? null;
 
-// builtDependency: true  — package downloads a platform-native binary via postinstall;
+// Usage: install-clis.mjs <component> <package> --binary <name> [--version <spec>] [--built-dependency] [--allow-all-builds]
+//
+// built-dependency: the package downloads a platform-native binary via postinstall;
 //   we fetch its optionalDependencies from the registry and build a precise allowlist.
-// allowAllBuilds: true   — package has transitive regular dependencies that need build
+// allow-all-builds: the package has transitive regular dependencies that need build
 //   scripts (e.g. koffi, protobufjs); their names can't be enumerated without recursively
 //   resolving the dep tree, so we use dangerously-allow-all-builds scoped to the install dir.
-const ALL_COMPONENTS = [
-  { component: "claude",    package: "@anthropic-ai/claude-code",        version: process.env.CLAUDE_VERSION    ?? "latest", binary: "claude",    enabled: process.env.WITH_CLAUDE    !== "0", builtDependency: true,  allowAllBuilds: false },
-  { component: "codex",     package: "@openai/codex",                    version: process.env.CODEX_VERSION     ?? "latest", binary: "codex",     enabled: process.env.WITH_CODEX     !== "0", builtDependency: false, allowAllBuilds: false },
-  { component: "gemini",    package: "@google/gemini-cli",               version: process.env.GEMINI_VERSION    ?? "latest", binary: "gemini",    enabled: process.env.WITH_GEMINI    !== "0", builtDependency: false, allowAllBuilds: true  },
-  { component: "jules",     package: "@google/jules",                    version: process.env.JULES_VERSION     ?? "latest", binary: "jules",     enabled: process.env.WITH_JULES     === "1", builtDependency: false, allowAllBuilds: false },
-  { component: "opencode",  package: "opencode-ai",                      version: process.env.OPENCODE_VERSION  ?? "latest", binary: "opencode",  enabled: process.env.WITH_OPENCODE  !== "0", builtDependency: true,  allowAllBuilds: false },
-  { component: "copilot",   package: "@github/copilot",                  version: process.env.COPILOT_VERSION   ?? "latest", binary: "copilot",   enabled: process.env.WITH_COPILOT   !== "0", builtDependency: false, allowAllBuilds: false },
-  { component: "pi",        package: "@earendil-works/pi-coding-agent",  version: process.env.PI_VERSION        ?? "latest", binary: "pi",        enabled: process.env.WITH_PI        !== "0", builtDependency: false, allowAllBuilds: true  },
-];
-
-if (INSTALL_COMPONENT !== null && !ALL_COMPONENTS.some(c => c.component === INSTALL_COMPONENT)) {
-  console.error(`Unknown INSTALL_COMPONENT: "${INSTALL_COMPONENT}". Valid values: ${ALL_COMPONENTS.map(c => c.component).join(", ")}`);
-  process.exit(1);
+function parseArgs(argv) {
+  const [component, packageName, ...rest] = argv;
+  const options = { version: "latest", binary: null, builtDependency: false, allowAllBuilds: false };
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === "--binary") options.binary = rest[++i];
+    else if (rest[i] === "--version") options.version = rest[++i] || "latest";
+    else if (rest[i] === "--built-dependency") options.builtDependency = true;
+    else if (rest[i] === "--allow-all-builds") options.allowAllBuilds = true;
+    else throw new Error(`Unknown argument: ${rest[i]}`);
+  }
+  if (!component || !packageName || !options.binary) {
+    console.error("Usage: install-clis.mjs <component> <package> --binary <name> [--version <spec>] [--built-dependency] [--allow-all-builds]");
+    process.exit(1);
+  }
+  return { component, package: packageName, ...options };
 }
 
-const COMPONENTS = INSTALL_COMPONENT !== null
-  ? ALL_COMPONENTS.filter(c => c.component === INSTALL_COMPONENT)
-  : ALL_COMPONENTS;
+const COMPONENT = parseArgs(process.argv.slice(2));
 
 if (isNaN(RELEASE_AGE_DAYS) || RELEASE_AGE_DAYS < 0) {
-  console.error("PNPM_CLI_MIN_RELEASE_AGE_DAYS must be a non-negative integer");
+  console.error("NPM_CLI_MIN_RELEASE_AGE_DAYS must be a non-negative integer");
   process.exit(1);
 }
 
 fs.mkdirSync(BIN_DIR, { recursive: true });
 fs.mkdirSync(INSTALL_ROOT, { recursive: true });
-fs.mkdirSync(METADATA_ROOT, { recursive: true });
-// Use append when running per-component (multiple RUN layers each write their slice).
-// Use truncate for a full install run so the file starts clean.
-if (INSTALL_COMPONENT === null) {
-  fs.writeFileSync(SUMMARY_FILE, "");
-  fs.writeFileSync(JSONL_FILE, "");
-}
-
+fs.mkdirSync(RESOLUTION_DIR, { recursive: true });
 if (RELEASE_AGE_DAYS > 0) {
   console.log(`Applying release-age policy: ${RELEASE_AGE_DAYS} days (${RELEASE_AGE_MINUTES} minutes) via pnpm minimumReleaseAge`);
 } else {
@@ -105,6 +99,9 @@ function formatWaitTime(remainingMs) {
 // onlyBuiltDependencies to be silently ignored in several pnpm 10.x releases.
 function buildWorkspaceYaml(releaseAgeMinutes, ignoreCves, allowedBuilds = [], dangerouslyAllowAllBuilds = false) {
   const lines = ['packages:', '  - "."'];
+  // pnpm 11+ ignores `store-dir` in .npmrc and the PNPM_STORE_DIR variable; storeDir must be set here.
+  // Without it the store lands in ~/.local/share/pnpm and the Docker/buildah cache mount is never used.
+  lines.push(`storeDir: ${JSON.stringify(PNPM_STORE_DIR)}`);
   if (releaseAgeMinutes > 0) {
     lines.push(`minimumReleaseAge: ${releaseAgeMinutes}`);
   }
@@ -137,22 +134,20 @@ function buildWorkspaceYaml(releaseAgeMinutes, ignoreCves, allowedBuilds = [], d
   return lines.join("\n") + "\n";
 }
 
-function appendSummary(text) {
-  fs.appendFileSync(SUMMARY_FILE, text);
+function appendSummary(component, text) {
+  fs.appendFileSync(path.join(RESOLUTION_DIR, `${component}.txt`), text);
   process.stdout.write(text);
 }
 
 function appendJsonl(record) {
-  fs.appendFileSync(JSONL_FILE, JSON.stringify(record) + "\n");
+  fs.appendFileSync(path.join(RESOLUTION_DIR, `${record.component}.jsonl`), JSON.stringify(record) + "\n");
 }
 
 function run(cmd, cwd) {
   execSync(cmd, { cwd, stdio: "inherit" });
 }
 
-async function installCli({ component, package: packageName, version: versionSpec, binary, enabled, builtDependency, allowAllBuilds }) {
-  if (!enabled) return;
-
+async function installCli({ component, package: packageName, version: versionSpec, binary, builtDependency, allowAllBuilds }) {
   const forceFix = AUDIT_FORCE_FIX_COMPONENTS.includes(component);
   const installDir = path.join(INSTALL_ROOT, component);
 
@@ -215,7 +210,7 @@ async function installCli({ component, package: packageName, version: versionSpe
       `[${component}] expected binary shim not found: ${binShim}\n` +
       `  package: ${packageName}\n` +
       `  available bins: ${availableBins.join(", ") || "(none)"}\n` +
-      `  If the bin name differs, update the 'binary' field in COMPONENTS.`
+      `  If the bin name differs, fix the --binary option.`
     );
   }
 
@@ -251,6 +246,7 @@ async function installCli({ component, package: packageName, version: versionSpe
   }
 
   appendSummary(
+    component,
     `Installing ${component}:\n` +
     `  requested: ${packageName}@${versionSpec}\n` +
     `  latest: ${latestVersion}${latestPublishTime ? ` (published ${latestPublishTime})` : ""}\n` +
@@ -284,10 +280,17 @@ async function installCli({ component, package: packageName, version: versionSpe
     run("pnpm install", installDir);
   }
 
-  run("pnpm audit", installDir);
-  const auditResult = "passed";
+  let auditResult = "passed";
+  try {
+    run("pnpm audit", installDir);
+  } catch (error) {
+    if (!AUDIT_IGNORE_COMPONENTS.includes(component)) throw error;
+    console.log(`[${component}] pnpm audit failed, ignored because ${component} is in NPM_AUDIT_IGNORE_COMPONENTS`);
+    auditResult = "failed (ignored)";
+  }
 
   appendSummary(
+    component,
     `  final installed: ${resolvedVersion}${resolvedPublishTime ? ` (published ${resolvedPublishTime})` : ""}\n` +
     `  final audit result: ${auditResult}\n\n`
   );
@@ -309,6 +312,4 @@ async function installCli({ component, package: packageName, version: versionSpe
   fs.chmodSync(binLink, 0o755);
 }
 
-for (const component of COMPONENTS) {
-  await installCli(component);
-}
+await installCli(COMPONENT);

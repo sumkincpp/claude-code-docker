@@ -1,9 +1,10 @@
 import argparse
 import logging
+import re
 import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import List, Literal
+from typing import TYPE_CHECKING, Iterable, List, Literal
 
 try:
     import tomllib
@@ -20,35 +21,27 @@ CONTAINER_NAME_BASE = "ccd"
 CONFIG_FILE_NAME = "ccd.toml"
 GLOBAL_CONFIG_PATH = Path.home() / ".config" / "ccd" / "ccd.toml"
 DEFAULT_BACKEND = "docker"
+DEFAULT_TAG = "latest"
+TAG_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 # Exported images handed from a build backend to a different run backend
-IMAGE_STORE = Path.home() / ".cache" / "ccd" / "images"
 
-FEATURE_BUILD_ARGS = {
-    "rust": "WITH_RUST",
-    "claude": "WITH_CLAUDE",
-    "codex": "WITH_CODEX",
-    "gemini": "WITH_GEMINI",
-    "opencode": "WITH_OPENCODE",
-    "copilot": "WITH_COPILOT",
-    "jules": "WITH_JULES",
-    "pi": "WITH_PI",
-}
-VERSION_BUILD_ARGS = {
-    "nvm": "NVM_VERSION",
-    "node": "NVM_NODE_VERSION",
-    "npm": "NPM_VERSION",
-    "uv": "UV_VERSION",
-    "rustup": "RUSTUP_VERSION",
-    "claude": "CLAUDE_VERSION",
-    "codex": "CODEX_VERSION",
-    "gemini": "GEMINI_VERSION",
-    "opencode": "OPENCODE_VERSION",
-    "copilot": "COPILOT_VERSION",
-    "jules": "JULES_VERSION",
-    "pi": "PI_VERSION",
-}
+
+if TYPE_CHECKING:
+    from ccd.features import Feature
 
 logger = logging.getLogger(__name__)
+
+
+def validate_tag(tag: str) -> str:
+    """The tag itself, or ValueError when container tools would not accept it."""
+    if not TAG_PATTERN.match(tag):
+        raise ValueError(f"Invalid image tag {tag!r} (letters, digits, '_', '.' and '-', at most 128 characters, not starting with '.' or '-')")
+    return tag
+
+
+def image_ref(name: str, tag: str = DEFAULT_TAG) -> str:
+    """name for the default tag (which container tools resolve to :latest anyway), name:tag otherwise."""
+    return name if tag == DEFAULT_TAG else f"{name}:{tag}"
 
 
 def _parse_comma_set(value: str) -> set[str]:
@@ -63,6 +56,9 @@ def _load_toml(path: Path) -> dict:
 @dataclass
 class BuildConfig:
     backend: str | None = None
+    tag: str | None = None
+    mode: str | None = None
+    flatten: bool = False
     with_features: set[str] | None = None
     without_features: set[str] | None = None
     force: bool = False
@@ -95,19 +91,28 @@ class BuildConfig:
 
         return cls(
             backend=build.get("backend"),
+            tag=build.get("tag"),
+            mode=build.get("mode"),
+            flatten=bool(build.get("flatten", False)),
             with_features=as_set(build["with_features"]) if "with_features" in build else None,
             without_features=as_set(build["without_features"]) if "without_features" in build else None,
             npm_min_release_age_days=build.get("npm_min_release_age_days", 7),
             npm_audit_ignore_components=as_set(build.get("npm_audit_ignore_components", [])),
             npm_audit_force_fix_components=as_set(build.get("npm_audit_force_fix_components", [])),
             npm_min_release_age_ignore_components=as_set(build.get("npm_min_release_age_ignore_components", [])),
-            versions={k: str(v) for k, v in versions_data.items() if k in VERSION_BUILD_ARGS},
+            versions={k: str(v) for k, v in versions_data.items()},
         )
 
-    def apply_cli(self, args: argparse.Namespace) -> "BuildConfig":
+    def apply_cli(self, args: argparse.Namespace, version_names: Iterable[str] = ()) -> "BuildConfig":
         """Return a new config with explicitly provided CLI args applied on top."""
         config = replace(self)
 
+        if getattr(args, "tag", None) is not None:
+            config.tag = args.tag
+        if getattr(args, "mode", None) is not None:
+            config.mode = args.mode
+        if getattr(args, "flatten", False):
+            config.flatten = True
         if args.with_features is not None:
             config.with_features = _parse_comma_set(args.with_features)
         if args.without_features is not None:
@@ -123,8 +128,8 @@ class BuildConfig:
         if args.npm_min_release_age_ignore_components is not None:
             config.npm_min_release_age_ignore_components = _parse_comma_set(args.npm_min_release_age_ignore_components)
 
-        for component in VERSION_BUILD_ARGS:
-            version = getattr(args, f"{component}_version", None)
+        for component in version_names:
+            version = getattr(args, f"{component.replace('-', '_')}_version", None)
             if version is not None:
                 config.versions[component] = version
 
@@ -134,22 +139,12 @@ class BuildConfig:
         if self.with_features is not None and self.without_features is not None:
             logger.error("Use only one of --with or --without")
             sys.exit(1)
-        for features in (self.with_features, self.without_features):
-            if features is None:
-                continue
-            unknown = features - set(FEATURE_BUILD_ARGS.keys())
-            if unknown:
-                logger.error("Unknown feature(s): %s", ", ".join(sorted(unknown)))
-                logger.error("Available features: %s", ", ".join(sorted(FEATURE_BUILD_ARGS.keys())))
+        if self.tag is not None:
+            try:
+                validate_tag(str(self.tag))
+            except ValueError as e:
+                logger.error("%s", e)
                 sys.exit(1)
-
-    def feature_flags(self) -> dict[str, bool] | None:
-        """Resolve --with/--without into {feature: enabled}; None means 'use the image defaults'."""
-        if self.with_features is not None:
-            return {f: f in self.with_features for f in FEATURE_BUILD_ARGS}
-        if self.without_features is not None:
-            return {f: f not in self.without_features for f in FEATURE_BUILD_ARGS}
-        return None
 
 
 @dataclass
@@ -160,10 +155,30 @@ class MountConfig:
     optional: bool = False
     readonly: bool = False
 
-    def to_path_spec(self) -> "PathSpec":
+    @classmethod
+    def parse(cls, raw: dict, where: str) -> "MountConfig":
+        """Raises ValueError for an invalid entry."""
+        if "host" not in raw or "container" not in raw:
+            raise ValueError(f"Each {where} entry must have 'host' and 'container' keys")
+        mount_type = raw.get("type", "folder")
+        if mount_type not in ("file", "folder"):
+            raise ValueError(f"Invalid mount type {mount_type!r} in {where} (expected 'file' or 'folder')")
+        return cls(
+            host=raw["host"],
+            container=raw["container"],
+            type=mount_type,
+            optional=raw.get("optional", False),
+            readonly=raw.get("readonly", False),
+        )
+
+    def to_path_spec(self, home: Path) -> "PathSpec":
+        """Expand {home} (the host --home folder) in host and a leading ~/ (the image home) in container."""
+        container = self.container
+        if container == "~" or container.startswith("~/"):
+            container = IMAGE_HOME_FOLDER + container[1:]
         return PathSpec(
-            path=Path(self.host).expanduser(),
-            volume_mapping=Path(self.container),
+            path=Path(self.host.replace("{home}", str(home))).expanduser(),
+            volume_mapping=Path(container),
             type=self.type,
             optional=self.optional,
             readonly=self.readonly,
@@ -173,9 +188,13 @@ class MountConfig:
 @dataclass
 class RunConfig:
     backend: str | None = None
+    tag: str | None = None
     memory: str | None = None
     cpus: str | None = None
     mounts: List[MountConfig] = field(default_factory=list)
+    # Per-feature mount overrides ([features.<name>] mounts = [...]) and the [run] features selection.
+    feature_mounts: dict[str, List[MountConfig]] = field(default_factory=dict)
+    features: list[str] | None = None
     # Raw per-backend tables (e.g. [firecracker]) handed to the matching plugin untouched.
     backend_options: dict[str, dict] = field(default_factory=dict)
 
@@ -193,35 +212,36 @@ class RunConfig:
         run = data.get("run", {})
         raw_mounts = run.get("mounts", [])
 
-        mounts: List[MountConfig] = []
-        for m in raw_mounts:
-            if "host" not in m or "container" not in m:
-                logger.error("Each [[run.mounts]] entry must have 'host' and 'container' keys")
-                sys.exit(1)
-            mounts.append(MountConfig(
-                host=m["host"],
-                container=m["container"],
-                type=m.get("type", "folder"),
-                optional=m.get("optional", False),
-                readonly=m.get("readonly", False),
-            ))
+        try:
+            mounts = [MountConfig.parse(m, "[[run.mounts]]") for m in raw_mounts]
+            feature_mounts = {
+                name: [MountConfig.parse(m, f"[features.{name}] mounts") for m in table.get("mounts", [])]
+                for name, table in data.get("features", {}).items()
+            }
+        except ValueError as e:
+            logger.error("%s", e)
+            sys.exit(1)
 
-        reserved = {"build", "versions", "run"}
+        reserved = {"build", "versions", "run", "features"}
         backend_options = {k: v for k, v in data.items() if k not in reserved and isinstance(v, dict)}
 
         return cls(
             backend=run.get("backend"),
+            tag=run.get("tag"),
             memory=run.get("memory"),
             cpus=run.get("cpus"),
             mounts=mounts,
+            feature_mounts=feature_mounts,
+            features=list(run["features"]) if "features" in run else None,
             backend_options=backend_options,
         )
 
     def merge(self, local: "RunConfig") -> "RunConfig":
         """Return a new config with local values taking precedence over self (global).
 
-        Scalar fields (backend, memory, cpus): local wins if set, otherwise fall back to global.
+        Scalar fields (backend, tag, memory, cpus): local wins if set, otherwise fall back to global.
         Mounts: global mounts first, then local mounts (both are applied).
+        Feature mounts: merged per feature, the local list replaces the global one; features follows the scalar rule.
         Backend option tables: merged per backend, local keys win.
         """
         options = {name: {**opts} for name, opts in self.backend_options.items()}
@@ -230,9 +250,12 @@ class RunConfig:
 
         return RunConfig(
             backend=local.backend if local.backend is not None else self.backend,
+            tag=local.tag if local.tag is not None else self.tag,
             memory=local.memory if local.memory is not None else self.memory,
             cpus=local.cpus if local.cpus is not None else self.cpus,
             mounts=self.mounts + local.mounts,
+            feature_mounts={**self.feature_mounts, **local.feature_mounts},
+            features=local.features if local.features is not None else self.features,
             backend_options=options,
         )
 
@@ -246,6 +269,21 @@ class RunConfig:
             logger.debug("Global run config loaded from: %s", global_path)
         logger.debug("Effective run config: %s", effective)
         return effective
+
+
+    def selected_features(self, features: "dict[str, Feature]") -> List[str]:
+        """Features whose mounts apply: those with mounts unless [run] features says otherwise."""
+        names = [n for n, f in features.items() if f.mounts] if self.features is None else self.features
+        unknown = [n for n in [*names, *self.feature_mounts] if n not in features]
+        if unknown:
+            logger.error("Unknown feature(s) in the config: %s", ", ".join(dict.fromkeys(unknown)))
+            logger.error("Available features: %s", ", ".join(features))
+            sys.exit(1)
+        return names
+
+    def selected_mounts(self, features: "dict[str, Feature]") -> List[MountConfig]:
+        """Mounts of the selected features: the feature's own, unless [features.NAME] replaces them."""
+        return [m for name in self.selected_features(features) for m in self.feature_mounts.get(name, features[name].mounts)]
 
 
 @dataclass
@@ -262,13 +300,24 @@ class RunParameters:
     image_name: str
     app_folder: str
     home_folder: str
+    tag: str = DEFAULT_TAG
     memory: str = "1g"
     cpus: str = "2"
     root: bool = False
+    features: List[str] = field(default_factory=list)
+    feature_mounts: List[MountConfig] = field(default_factory=list)
     extra_mounts: List[MountConfig] = field(default_factory=list)
+    command: List[str] = field(default_factory=list)
 
     @classmethod
-    def from_args(cls, image_name: str, args: argparse.Namespace, run_config: "RunConfig | None" = None, app_folder: str | None = None) -> "RunParameters":
+    def from_args(
+        cls,
+        image_name: str,
+        args: argparse.Namespace,
+        run_config: "RunConfig | None" = None,
+        app_folder: str | None = None,
+        features: "dict[str, Feature] | None" = None,
+    ) -> "RunParameters":
         """Create RunParameters from CLI args, optionally layering a RunConfig on top.
 
         Args:
@@ -277,6 +326,7 @@ class RunParameters:
             run_config: Optional config loaded from ccd.toml (config values are
                         overridden by any explicitly supplied CLI args)
             app_folder: Override for app_folder (defaults to args.app_folder or ".")
+            features: The loaded features, whose mounts are added to the run
         """
         if app_folder is None:
             app_folder = args.app_folder if hasattr(args, "app_folder") else "."
@@ -290,12 +340,23 @@ class RunParameters:
             if run_config.cpus is not None and args.cpus == "2":
                 cpus = run_config.cpus
 
+        tag = getattr(args, "tag", None) or (run_config.tag if run_config is not None else None) or DEFAULT_TAG
+        try:
+            validate_tag(str(tag))
+        except ValueError as e:
+            logger.error("%s", e)
+            sys.exit(1)
+
         return cls(
             image_name=image_name,
             app_folder=app_folder,
             home_folder=args.home,
+            tag=str(tag),
             memory=memory,
             cpus=cpus,
             root=args.root,
+            features=run_config.selected_features(features) if run_config is not None and features else [],
+            feature_mounts=run_config.selected_mounts(features) if run_config is not None and features else [],
             extra_mounts=run_config.mounts if run_config is not None else [],
+            command=list(getattr(args, "run_command", [])),
         )

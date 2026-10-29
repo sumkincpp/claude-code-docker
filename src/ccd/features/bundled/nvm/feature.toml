@@ -1,0 +1,19 @@
+description = "nvm, the Node version manager"
+paths = ["~/.nvm"]
+order = 10
+
+[env]
+NVM_DIR = "/home/user/.nvm"
+
+# https://github.com/nvm-sh/nvm/releases
+# The GitHub API can be blocked in some environments, set a specific version with --nvm-version.
+[install]
+command = [
+    '''if [ "$NVM_VERSION" = "latest" ]; then echo "Fetching latest nvm version from GitHub"; resp=$(curl --fail-with-body -s https://api.github.com/repos/nvm-sh/nvm/releases/latest); NVM_VERSION=$(printf '%s' "$resp" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/'); fi''',
+    'echo "Installing nvm version ${NVM_VERSION}"',
+    'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v${NVM_VERSION}/install.sh | bash',
+    'test -f /home/user/.nvm/nvm.sh',
+]
+
+[verify]
+command = '. "$NVM_DIR/nvm.sh" && nvm --version'

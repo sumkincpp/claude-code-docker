@@ -1,0 +1,13 @@
+description = "Google Gemini CLI"
+paths = ["~/.local/share/ccd/pnpm-installs/gemini", "~/.local/bin/gemini", "/metadata/pnpm-cli-resolution"]
+requires = ["pnpm"]
+
+[install]
+command = "ccd-npm-install gemini @google/gemini-cli --binary gemini --version \"$GEMINI_VERSION\" --allow-all-builds"
+
+[verify]
+command = "gemini --version"
+
+[[mounts]]
+host = "{home}/.gemini"
+container = "~/.gemini"

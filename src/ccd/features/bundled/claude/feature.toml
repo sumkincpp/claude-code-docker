@@ -1,0 +1,20 @@
+description = "Claude Code CLI"
+paths = ["~/.local/share/ccd/pnpm-installs/claude", "~/.local/bin/claude", "/metadata/pnpm-cli-resolution"]
+requires = ["pnpm"]
+[env]
+DISABLE_AUTOUPDATER = "1"
+
+[install]
+command = "ccd-npm-install claude @anthropic-ai/claude-code --binary claude --version \"$CLAUDE_VERSION\" --built-dependency"
+
+[verify]
+command = "claude --version"
+
+[[mounts]]
+host = "{home}/.claude"
+container = "~/.claude"
+
+[[mounts]]
+host = "{home}/.claude.json"
+container = "~/.claude.json"
+type = "file"

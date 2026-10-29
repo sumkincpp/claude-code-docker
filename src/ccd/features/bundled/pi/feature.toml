@@ -1,0 +1,13 @@
+description = "Pi coding agent"
+paths = ["~/.local/share/ccd/pnpm-installs/pi", "~/.local/bin/pi", "/metadata/pnpm-cli-resolution"]
+requires = ["pnpm"]
+
+[install]
+command = "ccd-npm-install pi @earendil-works/pi-coding-agent --binary pi --version \"$PI_VERSION\" --allow-all-builds"
+
+[verify]
+command = "pi --version"
+
+[[mounts]]
+host = "{home}/.pi"
+container = "~/.pi"
