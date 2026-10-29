@@ -25,7 +25,7 @@ npm_audit_force_fix_components = ["pi"]
 
 # Include only these features (mutually exclusive with without_features)
 # with_features = ["claude", "codex", "gemini", "opencode", "copilot", "jules", "pi", "rust"]
-with_features = ["go", "codex", "claude", "pi", "copilot", "rust"]
+with_features = ["go", "codex", "claude", "pi", "copilot", "rust", "uv"]
 #
 # Exclude these features
 # without_features = []
